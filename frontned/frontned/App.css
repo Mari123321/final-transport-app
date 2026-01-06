@@ -1,0 +1,95 @@
+.app {
+  display: flex;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden; /* prevent accidental body scroll */
+}
+
+.sidebar {
+  width: 220px;
+  height: 100vh;
+  background-color: rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(10px);
+  padding: 20px;
+  color: white;
+  overflow: hidden;
+}
+
+.sidebar h2 {
+  font-size: 1.8em;
+  margin-bottom: 20px;
+}
+
+.sidebar ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.sidebar ul li {
+  margin: 15px 0;
+}
+
+.sidebar ul li a {
+  text-decoration: none;
+  color: #fff;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.sidebar ul li a:hover,
+.sidebar ul li a.active {
+  color: #ffd700;
+}
+
+main.no-scrollbar {
+  flex: 1;
+  padding: 40px 24px;
+  overflow-y: auto;   /* ✅ scroll only inside content */
+  overflow-x: hidden;
+  height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 20px;
+}
+
+.search-bar {
+  width: 240px;
+  padding: 10px;
+  border-radius: 8px;
+  border: none;
+  font-size: 1em;
+}
+
+.content h1 {
+  font-size: 2rem;
+  margin-bottom: 10px;
+}
+
+.content p {
+  font-size: 1.1rem;
+  opacity: 0.9;
+}
+main.no-scrollbar {
+  flex: 1;
+  padding: 40px 24px;
+  overflow-y: auto;
+  overflow-x: hidden;   /* ✅ stop horizontal scrollbar */
+  height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Fix MUI Grid/Box overflow issue */
+.MuiGrid-root,
+.MuiBox-root {
+  max-width: 100% !important;   /* ✅ prevent exceeding container width */
+  overflow-x: hidden;           /* stop pushing scrollbar */
+}

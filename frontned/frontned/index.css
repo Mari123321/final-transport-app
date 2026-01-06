@@ -1,0 +1,84 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap');
+
+/* Base Reset */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  font-family: 'Poppins', sans-serif;
+  background-color: #F9FAFB;
+  color: #333;
+  overflow-x: hidden;  /* ✅ prevent horizontal scroll */
+}
+
+/* Headings */
+h1, h2, h3, h4, h5 {
+  font-weight: 600;
+  color: #111827;
+}
+
+/* Links */
+a {
+  text-decoration: none;
+  color: #2563EB;
+  transition: color 0.2s ease-in-out;
+}
+a:hover {
+  color: #1E40AF;
+}
+
+/* Buttons */
+button {
+  border: none;
+  outline: none;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-weight: 500;
+  background-color: #2563EB;
+  color: white;
+  transition: all 0.2s ease-in-out;
+}
+button:hover {
+  background-color: #1E40AF;
+}
+button:disabled {
+  background-color: #93C5FD;
+  cursor: not-allowed;
+}
+
+
+/* Inputs */
+input, select, textarea {
+  font-family: inherit;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #E5E7EB;
+  outline: none;
+  transition: border 0.2s ease-in-out;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: #2563EB;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+}
+
+/* Layout Helpers */
+.container {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* Utility classes */
+.text-center { text-align: center; }
+.text-muted { color: #6B7280; }
+.mt-1 { margin-top: 4px; }
+.mt-2 { margin-top: 8px; }
+.mt-3 { margin-top: 16px; }
+.mt-4 { margin-top: 24px; }

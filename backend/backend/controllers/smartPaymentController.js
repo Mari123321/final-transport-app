@@ -1,0 +1,757 @@
+/**
+ * Smart Payment Controller - Production Grade
+ * 
+ * CORE FEATURES:
+ * - Client-driven date filtering (NO manual date entry)
+ * - Automatic payment status calculation
+ * - Partial payment with balance tracking
+ * - Transaction audit history
+ * - Invoice synchronization
+ * 
+ * BUSINESS RULES:
+ * - Payment status is ALWAYS computed from amounts (never manual)
+ * - All filtering happens in database queries
+ * - Balance calculations are backend-enforced
+ * - Every payment creates a transaction record
+ */
+
+import db from "../models/index.js";
+import { Op, fn, col, literal } from "sequelize";
+
+const { Client, Payment, Invoice, PaymentTransaction, sequelize } = db;
+
+// ============================================================
+// GET ALL CLIENTS - For dropdown selection
+// ============================================================
+export const getClientsForPayment = async (req, res) => {
+  try {
+    const clients = await Client.findAll({
+      attributes: ["client_id", "client_name", "client_phone", "client_email"],
+      order: [["client_name", "ASC"]],
+    });
+
+    res.json({
+      success: true,
+      data: clients.map(c => ({
+        id: c.client_id,
+        name: c.client_name,
+        phone: c.client_phone,
+        email: c.client_email,
+      }))
+    });
+  } catch (error) {
+    console.error("Error fetching clients:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch clients",
+      detail: error.message
+    });
+  }
+};
+
+// ============================================================
+// GET BILL DATES FOR CLIENT - Dynamic date dropdown
+// This is the CRITICAL endpoint for smart filtering
+// User selects client → dates auto-populate
+// ============================================================
+export const getBillDatesForClient = async (req, res) => {
+  try {
+    const { clientId } = req.query;
+
+    if (!clientId) {
+      return res.status(400).json({
+        success: false,
+        error: "Client ID is required",
+        detail: "Please select a client first"
+      });
+    }
+
+    // PRODUCTION FIX: Fetch dates from INVOICES only (not payments)
+    // Include invoices with status: Pending, Partial, Unpaid, Overdue
+    // Exclude fully Paid invoices
+    const invoiceDates = await Invoice.findAll({
+      where: { 
+        client_id: clientId,
+        payment_status: {
+          [Op.in]: ['Pending', 'Partial', 'Unpaid']
+        }
+      },
+      attributes: [[fn('DISTINCT', col('date')), 'date']],
+      order: [['date', 'DESC']],
+      raw: true
+    });
+
+    // Convert to sorted array (newest first)
+    const sortedDates = invoiceDates
+      .filter(d => d.date)
+      .map(d => d.date)
+      .sort((a, b) => new Date(b) - new Date(a));
+
+    const formattedDates = sortedDates.map(date => ({
+      iso: date,
+      display: formatDateForDisplay(date)
+    }));
+
+    res.json({
+      success: true,
+      data: formattedDates,
+      count: formattedDates.length
+    });
+  } catch (error) {
+    console.error("Error fetching bill dates:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch bill dates",
+      detail: error.message
+    });
+  }
+};
+
+// ============================================================
+// GET FILTERED PAYMENTS - Client + Date filtered
+// ============================================================
+export const getFilteredPayments = async (req, res) => {
+  try {
+    const {
+      clientId,
+      billDate,
+      status,
+      paymentMode,
+      page = 1,
+      limit = 50,
+      sortBy = 'bill_date',
+      sortOrder = 'DESC'
+    } = req.query;
+
+    // Build WHERE clause
+    const where = {};
+
+    if (clientId) where.client_id = clientId;
+    if (billDate) where.bill_date = billDate;
+    if (status) where.payment_status = status;
+    if (paymentMode) where.payment_mode = paymentMode;
+
+    // Add overdue check - update is_overdue flag for all pending payments
+    await updateOverdueStatus();
+
+    // Pagination
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    // Fetch payments with associations
+    const { count, rows: payments } = await Payment.findAndCountAll({
+      where,
+      include: [
+        {
+          model: Client,
+          as: "client",
+          attributes: ["client_id", "client_name", "client_phone", "client_email"]
+        },
+        {
+          model: Invoice,
+          as: "invoice",
+          attributes: ["invoice_id", "invoice_number", "total_amount", "amount_paid", "payment_status", "date"],
+          required: false
+        }
+      ],
+      order: [[sortBy, sortOrder], ['createdAt', 'DESC']],
+      limit: parseInt(limit),
+      offset: offset,
+    });
+
+    // Transform data for frontend
+    const result = payments.map((payment) => ({
+      paymentId: payment.payment_id,
+      receiptNumber: payment.receipt_number,
+      clientId: payment.client_id,
+      clientName: payment.client?.client_name || "Unknown",
+      clientPhone: payment.client?.client_phone || "",
+      clientEmail: payment.client?.client_email || "",
+      invoiceId: payment.invoice_id,
+      invoiceNumber: payment.invoice?.invoice_number || "",
+      totalAmount: parseFloat(payment.total_amount) || 0,
+      paidAmount: parseFloat(payment.paid_amount) || 0,
+      balanceAmount: parseFloat(payment.balance_amount) || 0,
+      billDate: payment.bill_date,
+      paymentDate: payment.payment_date,
+      dueDate: payment.due_date,
+      paymentMode: payment.payment_mode,
+      paymentStatus: payment.payment_status,
+      referenceNo: payment.reference_no,
+      remarks: payment.remarks,
+      isOverdue: payment.is_overdue,
+      overdueDays: payment.overdue_days,
+      createdAt: payment.createdAt,
+      updatedAt: payment.updatedAt,
+    }));
+
+    res.json({
+      success: true,
+      data: result,
+      pagination: {
+        total: count,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(count / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error("Error getting filtered payments:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      detail: "Database query failed while fetching payments"
+    });
+  }
+};
+
+// ============================================================
+// GET PAYMENT SUMMARY - For filtered results
+// ============================================================
+export const getFilteredPaymentSummary = async (req, res) => {
+  try {
+    const { clientId, billDate, status, paymentMode } = req.query;
+
+    // Build WHERE clause
+    const where = {};
+    if (clientId) where.client_id = clientId;
+    if (billDate) where.bill_date = billDate;
+    if (status) where.payment_status = status;
+    if (paymentMode) where.payment_mode = paymentMode;
+
+    // Aggregate query
+    const summary = await Payment.findAll({
+      where,
+      attributes: [
+        [fn('COUNT', col('payment_id')), 'count'],
+        [fn('SUM', col('total_amount')), 'totalBilled'],
+        [fn('SUM', col('paid_amount')), 'totalReceived'],
+        [fn('SUM', col('balance_amount')), 'totalPending'],
+      ],
+      raw: true
+    });
+
+    // Get overdue data
+    const overdueWhere = { ...where, is_overdue: true };
+    const overdueData = await Payment.findAll({
+      where: overdueWhere,
+      attributes: [
+        [fn('COUNT', col('payment_id')), 'overdueCount'],
+        [fn('SUM', col('balance_amount')), 'overdueAmount'],
+      ],
+      raw: true
+    });
+
+    // Get status breakdown
+    const statusBreakdown = await Payment.findAll({
+      where,
+      attributes: [
+        'payment_status',
+        [fn('COUNT', col('payment_id')), 'count'],
+        [fn('SUM', col('total_amount')), 'amount']
+      ],
+      group: ['payment_status'],
+      raw: true
+    });
+
+    const totalBilled = parseFloat(summary[0]?.totalBilled) || 0;
+    const totalReceived = parseFloat(summary[0]?.totalReceived) || 0;
+    const totalPending = parseFloat(summary[0]?.totalPending) || 0;
+    const collectionRate = totalBilled > 0 ? ((totalReceived / totalBilled) * 100).toFixed(1) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        count: parseInt(summary[0]?.count) || 0,
+        totalBilled,
+        totalReceived,
+        totalPending,
+        collectionRate: parseFloat(collectionRate),
+        overdueCount: parseInt(overdueData[0]?.overdueCount) || 0,
+        overdueAmount: parseFloat(overdueData[0]?.overdueAmount) || 0,
+        statusBreakdown: statusBreakdown.reduce((acc, item) => {
+          acc[item.payment_status] = {
+            count: parseInt(item.count),
+            amount: parseFloat(item.amount) || 0
+          };
+          return acc;
+        }, {})
+      }
+    });
+  } catch (error) {
+    console.error("Error getting payment summary:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      detail: "Failed to calculate payment summary"
+    });
+  }
+};
+
+// ============================================================
+// ADD PARTIAL PAYMENT - CRITICAL for balance calculation
+// ============================================================
+export const addSmartPartialPayment = async (req, res) => {
+  const t = await sequelize.transaction();
+  
+  try {
+    const { id } = req.params;
+    const { amount, paymentMode, referenceNo, remarks } = req.body;
+
+    // Validate amount
+    if (!amount || Number(amount) <= 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        error: "Payment amount must be greater than 0",
+        field: "amount"
+      });
+    }
+
+    // Fetch payment
+    const payment = await Payment.findByPk(id, {
+      include: [
+        { model: Client, as: "client", attributes: ["client_id", "client_name"] },
+        { model: Invoice, as: "invoice", attributes: ["invoice_id", "invoice_number"], required: false }
+      ],
+      transaction: t
+    });
+
+    if (!payment) {
+      await t.rollback();
+      return res.status(404).json({
+        success: false,
+        error: "Payment record not found"
+      });
+    }
+
+    const paymentAmount = Number(amount);
+    const currentBalance = parseFloat(payment.balance_amount);
+    const currentPaid = parseFloat(payment.paid_amount);
+    const totalAmount = parseFloat(payment.total_amount);
+
+    // Validate amount doesn't exceed balance
+    if (paymentAmount > currentBalance) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        error: "Payment exceeds pending balance",
+        detail: `Maximum payable amount is ₹${currentBalance.toFixed(2)}`,
+        maxPayable: currentBalance
+      });
+    }
+
+    // Calculate new amounts
+    const newPaidAmount = currentPaid + paymentAmount;
+    const newBalanceAmount = totalAmount - newPaidAmount;
+
+    // Auto-calculate status (NEVER from UI)
+    let newStatus = 'Pending';
+    if (newBalanceAmount <= 0) {
+      newStatus = 'Paid';
+    } else if (newPaidAmount > 0) {
+      newStatus = 'Partial';
+    }
+
+    // Create transaction record BEFORE updating payment
+    await PaymentTransaction.create({
+      payment_id: payment.payment_id,
+      client_id: payment.client_id,
+      invoice_id: payment.invoice_id,
+      transaction_type: 'payment',
+      amount: paymentAmount,
+      balance_before: currentBalance,
+      balance_after: newBalanceAmount,
+      payment_mode: paymentMode || 'Cash',
+      reference_no: referenceNo || null,
+      remarks: remarks || `Partial payment of ₹${paymentAmount.toFixed(2)}`,
+      transaction_date: new Date(),
+    }, { transaction: t });
+
+    // Update payment record
+    await payment.update({
+      paid_amount: newPaidAmount,
+      balance_amount: newBalanceAmount,
+      payment_status: newStatus,
+      payment_date: new Date().toISOString().split('T')[0],
+      payment_mode: paymentMode || payment.payment_mode,
+      reference_no: referenceNo || payment.reference_no,
+      remarks: remarks 
+        ? `${payment.remarks || ''}\n[${new Date().toLocaleDateString()}] ${remarks}`.trim() 
+        : payment.remarks,
+      is_overdue: newStatus === 'Paid' ? false : payment.is_overdue,
+    }, { transaction: t });
+
+    // Update linked invoice if exists
+    if (payment.invoice_id) {
+      await updateInvoicePaymentStatus(payment.invoice_id, t);
+    }
+
+    await t.commit();
+
+    // Fetch updated payment for response
+    const updatedPayment = await Payment.findByPk(id, {
+      include: [
+        { model: Client, as: "client", attributes: ["client_id", "client_name"] },
+        { model: Invoice, as: "invoice", attributes: ["invoice_id", "invoice_number"], required: false }
+      ]
+    });
+
+    res.json({
+      success: true,
+      message: `Payment of ₹${paymentAmount.toFixed(2)} recorded successfully`,
+      data: {
+        paymentId: updatedPayment.payment_id,
+        receiptNumber: updatedPayment.receipt_number,
+        clientName: updatedPayment.client?.client_name,
+        invoiceNumber: updatedPayment.invoice?.invoice_number,
+        totalAmount: parseFloat(updatedPayment.total_amount),
+        paidAmount: parseFloat(updatedPayment.paid_amount),
+        balanceAmount: parseFloat(updatedPayment.balance_amount),
+        paymentStatus: updatedPayment.payment_status,
+        paymentMode: updatedPayment.payment_mode,
+        previousBalance: currentBalance,
+        amountPaid: paymentAmount,
+        newBalance: newBalanceAmount,
+      }
+    });
+  } catch (error) {
+    await t.rollback();
+    console.error("Error adding partial payment:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      detail: "Failed to record partial payment"
+    });
+  }
+};
+
+// ============================================================
+// GET PAYMENT TRANSACTION HISTORY
+// ============================================================
+export const getPaymentTransactions = async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+
+    const transactions = await PaymentTransaction.findAll({
+      where: { payment_id: paymentId },
+      include: [
+        { model: Client, as: "client", attributes: ["client_id", "client_name"] }
+      ],
+      order: [['transaction_date', 'DESC']],
+    });
+
+    res.json({
+      success: true,
+      data: transactions.map(t => ({
+        transactionId: t.transaction_id,
+        paymentId: t.payment_id,
+        clientName: t.client?.client_name,
+        transactionType: t.transaction_type,
+        amount: parseFloat(t.amount),
+        balanceBefore: parseFloat(t.balance_before),
+        balanceAfter: parseFloat(t.balance_after),
+        paymentMode: t.payment_mode,
+        referenceNo: t.reference_no,
+        remarks: t.remarks,
+        transactionDate: t.transaction_date,
+        createdAt: t.createdAt,
+      }))
+    });
+  } catch (error) {
+    console.error("Error fetching transactions:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      detail: "Failed to fetch payment transactions"
+    });
+  }
+};
+
+// ============================================================
+// CREATE PAYMENT FROM INVOICE
+// ============================================================
+export const createPaymentFromInvoice = async (req, res) => {
+  const t = await sequelize.transaction();
+  
+  try {
+    const {
+      clientId,
+      invoiceId,
+      billDate,
+      paidAmount = 0,
+      dueDate,
+      paymentMode = 'Cash',
+      referenceNo,
+      remarks,
+    } = req.body;
+
+    // Validation
+    if (!clientId) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        error: "Client is required",
+        field: "clientId"
+      });
+    }
+
+    if (!invoiceId) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        error: "Invoice is required",
+        field: "invoiceId"
+      });
+    }
+
+    // Verify client exists
+    const client = await Client.findByPk(clientId, { transaction: t });
+    if (!client) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        error: "Invalid client",
+        detail: `Client with ID ${clientId} does not exist`
+      });
+    }
+
+    // Verify invoice exists and get total
+    const invoice = await Invoice.findByPk(invoiceId, { transaction: t });
+    if (!invoice) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        error: "Invalid invoice",
+        detail: `Invoice with ID ${invoiceId} does not exist`
+      });
+    }
+
+    const totalAmount = parseFloat(invoice.total_amount) || 0;
+    const paid = Number(paidAmount) || 0;
+    const balance = totalAmount - paid;
+    const effectiveBillDate = billDate || invoice.date;
+
+    // Create payment
+    const newPayment = await Payment.create({
+      client_id: clientId,
+      invoice_id: invoiceId,
+      total_amount: totalAmount,
+      paid_amount: paid,
+      balance_amount: balance,
+      bill_date: effectiveBillDate,
+      payment_date: paid > 0 ? new Date().toISOString().split('T')[0] : null,
+      due_date: dueDate,
+      payment_mode: paymentMode,
+      reference_no: referenceNo,
+      remarks,
+    }, { transaction: t });
+
+    // Create initial transaction record if there's an initial payment
+    if (paid > 0) {
+      await PaymentTransaction.create({
+        payment_id: newPayment.payment_id,
+        client_id: clientId,
+        invoice_id: invoiceId,
+        transaction_type: 'initial',
+        amount: paid,
+        balance_before: totalAmount,
+        balance_after: balance,
+        payment_mode: paymentMode,
+        reference_no: referenceNo,
+        remarks: remarks || `Initial payment of ₹${paid.toFixed(2)}`,
+        transaction_date: new Date(),
+      }, { transaction: t });
+    }
+
+    // Update invoice payment status
+    await updateInvoicePaymentStatus(invoiceId, t);
+
+    await t.commit();
+
+    // Fetch full payment with associations
+    const payment = await Payment.findByPk(newPayment.payment_id, {
+      include: [
+        { model: Client, as: "client", attributes: ["client_id", "client_name"] },
+        { model: Invoice, as: "invoice", attributes: ["invoice_id", "invoice_number"] }
+      ]
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Payment record created successfully",
+      data: {
+        paymentId: payment.payment_id,
+        receiptNumber: payment.receipt_number,
+        clientName: payment.client?.client_name,
+        invoiceNumber: payment.invoice?.invoice_number,
+        totalAmount: parseFloat(payment.total_amount),
+        paidAmount: parseFloat(payment.paid_amount),
+        balanceAmount: parseFloat(payment.balance_amount),
+        paymentStatus: payment.payment_status,
+        billDate: payment.bill_date,
+      }
+    });
+  } catch (error) {
+    await t.rollback();
+    console.error("Error creating payment:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      detail: "Failed to create payment record"
+    });
+  }
+};
+
+// ============================================================
+// GET INVOICES FOR CLIENT - For linking payments to invoices
+// ============================================================
+export const getInvoicesForClient = async (req, res) => {
+  try {
+    const { clientId } = req.query;
+
+    if (!clientId) {
+      return res.status(400).json({
+        success: false,
+        error: "Client ID is required"
+      });
+    }
+
+    const invoices = await Invoice.findAll({
+      where: { client_id: clientId },
+      attributes: [
+        "invoice_id", 
+        "invoice_number", 
+        "total_amount", 
+        "amount_paid", 
+        "pending_amount",
+        "payment_status", 
+        "date"
+      ],
+      order: [["date", "DESC"]],
+    });
+
+    res.json({
+      success: true,
+      data: invoices.map(inv => ({
+        id: inv.invoice_id,
+        invoiceNumber: inv.invoice_number,
+        totalAmount: parseFloat(inv.total_amount) || 0,
+        amountPaid: parseFloat(inv.amount_paid) || 0,
+        pendingAmount: parseFloat(inv.pending_amount) || (parseFloat(inv.total_amount) - parseFloat(inv.amount_paid)) || 0,
+        status: inv.payment_status,
+        date: inv.date,
+        displayLabel: `${inv.invoice_number} - ₹${(parseFloat(inv.total_amount) || 0).toLocaleString()} (${inv.payment_status})`
+      }))
+    });
+  } catch (error) {
+    console.error("Error fetching invoices:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+// ============================================================
+// HELPER: Update Invoice Payment Status
+// ============================================================
+async function updateInvoicePaymentStatus(invoiceId, transaction = null) {
+  try {
+    const options = transaction ? { transaction } : {};
+    
+    const invoice = await Invoice.findByPk(invoiceId, options);
+    if (!invoice) return;
+
+    // Get all payments for this invoice
+    const payments = await Payment.findAll({
+      where: { invoice_id: invoiceId },
+      attributes: [[fn('SUM', col('paid_amount')), 'totalPaid']],
+      raw: true,
+      ...options
+    });
+
+    const totalPaid = parseFloat(payments[0]?.totalPaid) || 0;
+    const totalAmount = parseFloat(invoice.total_amount) || 0;
+
+    let status = 'Unpaid';
+    if (totalPaid >= totalAmount && totalAmount > 0) {
+      status = 'Paid';
+    } else if (totalPaid > 0) {
+      status = 'Partial';
+    }
+
+    await invoice.update({
+      amount_paid: totalPaid,
+      pending_amount: totalAmount - totalPaid,
+      payment_status: status
+    }, options);
+  } catch (error) {
+    console.error("Error updating invoice status:", error);
+  }
+}
+
+// ============================================================
+// HELPER: Update Overdue Status
+// ============================================================
+async function updateOverdueStatus() {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Find all payments that are overdue
+    const overduePayments = await Payment.findAll({
+      where: {
+        due_date: { [Op.lt]: today },
+        payment_status: { [Op.ne]: 'Paid' }
+      }
+    });
+
+    // Update each overdue payment
+    for (const payment of overduePayments) {
+      const dueDate = new Date(payment.due_date);
+      const overdueDays = Math.floor((today - dueDate) / (1000 * 60 * 60 * 24));
+      
+      if (!payment.is_overdue || payment.overdue_days !== overdueDays) {
+        await payment.update({
+          is_overdue: true,
+          overdue_days: overdueDays
+        });
+      }
+    }
+
+    // Reset overdue flag for paid payments
+    await Payment.update(
+      { is_overdue: false, overdue_days: 0 },
+      { where: { payment_status: 'Paid', is_overdue: true } }
+    );
+  } catch (error) {
+    console.error("Error updating overdue status:", error);
+  }
+}
+
+// ============================================================
+// HELPER: Format Date for Display
+// ============================================================
+function formatDateForDisplay(dateStr) {
+  if (!dateStr) return '';
+  const date = new Date(dateStr);
+  return date.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric'
+  });
+}
+
+// ============================================================
+// EXPORT ALL
+// ============================================================
+export default {
+  getClientsForPayment,
+  getBillDatesForClient,
+  getFilteredPayments,
+  getFilteredPaymentSummary,
+  addSmartPartialPayment,
+  getPaymentTransactions,
+  createPaymentFromInvoice,
+  getInvoicesForClient,
+};
