@@ -1,0 +1,9 @@
+[build]
+  base = "frontned/frontned"
+  command = "npm run build"
+  publish = "frontned/frontned/dist"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
