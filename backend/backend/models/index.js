@@ -10,16 +10,16 @@ const __dirname = path.dirname(__filename);
 
 // Import models
 import UserModel from "./userModel.js";
-import ClientModel from "./clientModel.js";
-import DriverModel from "./driver.js";
-import VehicleModel from "./vehicle.js";
-import TripModel from "./trip.js";
-import InvoiceModel from "./invoice.js";
-import InvoiceTripModel from "./invoiceTrip.js";
-import ExpenseModel from "./expense.js";
-import PaymentModel from "./payment.js";
-import AdvanceModel from "./advance.js";
-import TransactionModel from "./transaction.js";
+import ClientModel from "./ClientModel.js";
+import DriverModel from "./Driver.js";
+import VehicleModel from "./Vehicle.js";
+import TripModel from "./Trip.js";
+import InvoiceModel from "./Invoice.js";
+import InvoiceTripModel from "./InvoiceTripModel.js";
+import ExpenseModel from "./ExpenseModel.js";
+import PaymentModel from "./PaymentModel.js";
+import AdvanceModel from "./AdvanceModel.js";
+import TransactionModel from "./TransactionModel.js";
 import DispatchModel from "./dispatch.js";
 import ExtraChargeModel from "./extraCharge.js";
 import DriverExpenseModel from "./driverExpense.js";
