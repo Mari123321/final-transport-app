@@ -1,0 +1,19 @@
+version: "1"
+projects:
+- name: My project
+  environments:
+  - name: Production
+    services:
+    - type: web
+      name: final-transport-app
+      runtime: node
+      repo: https://github.com/Mari123321/final-transport-app
+      plan: free
+      envVars:
+      - key: JWT_SECRET
+        sync: false
+      region: oregon
+      buildCommand: ' npm install'
+      startCommand: npm start
+      autoDeployTrigger: commit
+      rootDir: backend/backend
