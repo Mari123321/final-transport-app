@@ -32,7 +32,7 @@ import ExpensesPage from "./pages/ExpensesPage";
 import InvoicesPage from "./pages/InvoicesPage";
 import InvoiceDashboard from "./pages/InvoiceDashboard";
 import VehiclesPage from "./pages/VehiclesPage";
-import AddVehiclePage from "./pages/AddVehiclePage";
+import AddVehiclePage from "./pages/AddvehiclePage";
 import TripsForm from "./pages/TripsForm";
 import AdvancesPage from "./pages/AdvancesPage";
 import ProfilePage from "./pages/ProfilePage";
