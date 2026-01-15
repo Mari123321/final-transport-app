@@ -54,7 +54,6 @@ const navGroups = [
       { text: 'Smart Payments', icon: <PaymentIcon />, path: '/smart-payments' },
       { text: 'Payments', icon: <PaymentIcon />, path: '/payments' },
       { text: 'Bills', icon: <DescriptionIcon />, path: '/bills' },
-      { text: 'Generate Invoice', icon: <DescriptionIcon />, path: '/generate-invoice' },
       { text: 'Driver Expenses', icon: <LocalGasStationIcon />, path: '/driver-expenses' },
     ],
   },

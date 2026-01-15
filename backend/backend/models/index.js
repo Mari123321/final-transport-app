@@ -135,9 +135,22 @@ PaymentTransaction.belongsTo(Client, { foreignKey: "client_id", as: "client" });
 Invoice.hasMany(PaymentTransaction, { foreignKey: "invoice_id", as: "paymentTransactions" });
 PaymentTransaction.belongsTo(Invoice, { foreignKey: "invoice_id", as: "invoice" });
 
+// Bill ↔ Invoice (1-to-1)
+Invoice.hasOne(Bill, { foreignKey: "invoice_id", as: "bill" });
+Bill.belongsTo(Invoice, { foreignKey: "invoice_id", as: "invoice" });
+
+// Bill ↔ Client (1-to-many)
+Client.hasMany(Bill, { foreignKey: "client_id", as: "bills" });
+Bill.belongsTo(Client, { foreignKey: "client_id", as: "client" });
+
+// Bill ↔ Vehicle (1-to-many)
+Vehicle.hasMany(Bill, { foreignKey: "vehicle_id", as: "bills" });
+Bill.belongsTo(Vehicle, { foreignKey: "vehicle_id", as: "vehicle" });
+
 // Diagnostic logs to confirm associations loaded correctly
 console.log("Invoice associations:", Object.keys(Invoice.associations));
 console.log("Vehicle associations:", Object.keys(Vehicle.associations));
+console.log("Bill associations:", Object.keys(Bill.associations));
 
 /* Export Models and Sequelize */
 

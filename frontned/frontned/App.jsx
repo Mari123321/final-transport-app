@@ -17,6 +17,7 @@ import Sidebar from "./components/Sidebar";
 import Topbar from "./components/Topbar";
 import AnimatedPage from "./components/AnimatedPage";
 import ProtectedRoute from "./components/ProtectedRoute";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 // Pages
 import Login from "./pages/Login";
@@ -29,6 +30,7 @@ import TripsPage from "./pages/TripsPage";
 import PaymentsPage from "./pages/PaymentsPage";
 import ExpensesPage from "./pages/ExpensesPage";
 import InvoicesPage from "./pages/InvoicesPage";
+import InvoiceDashboard from "./pages/InvoiceDashboard";
 import VehiclesPage from "./pages/VehiclesPage";
 import AddVehiclePage from "./pages/AddVehiclePage";
 import TripsForm from "./pages/TripsForm";
@@ -41,6 +43,7 @@ import GenerateInvoice from "./pages/GenerateInvoice";
 import DriverExpensesPage from "./pages/DriverExpensesPage";
 import DashboardAnalytics from "./pages/DashboardAnalytics";
 import SmartPaymentsPage from "./pages/SmartPaymentsPage";
+import InvoiceCreationPage from "./pages/InvoiceCreationPage";
 
 // ==========================
 // THEME CONFIGURATION
@@ -206,7 +209,17 @@ const AppContent = () => {
                 element={
                   <ProtectedRoute>
                     <AnimatedPage>
-                      <InvoicesPage />
+                      <InvoiceDashboard />
+                    </AnimatedPage>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/invoices/create"
+                element={
+                  <ProtectedRoute>
+                    <AnimatedPage>
+                      <InvoiceCreationPage />
                     </AnimatedPage>
                   </ProtectedRoute>
                 }
@@ -338,9 +351,11 @@ const AppContent = () => {
 const App = () => (
   <ThemeProvider theme={theme}>
     <CssBaseline />
-    <Router>
-      <AppContent />
-    </Router>
+    <ErrorBoundary>
+      <Router>
+        <AppContent />
+      </Router>
+    </ErrorBoundary>
   </ThemeProvider>
 );
 

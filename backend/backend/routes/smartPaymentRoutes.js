@@ -17,6 +17,8 @@ import {
   getPaymentTransactions,
   createPaymentFromInvoice,
   getInvoicesForClient,
+  receiveInvoiceFromCreation,
+  createTripPayment,
 } from "../controllers/smartPaymentController.js";
 
 const router = express.Router();
@@ -48,8 +50,14 @@ router.get("/summary", getFilteredPaymentSummary);
 // PAYMENT OPERATIONS
 // ============================================================
 
+// Create payment for trip (direct trip payment with validation)
+router.post("/trip", createTripPayment);
+
 // Create payment from invoice
 router.post("/", createPaymentFromInvoice);
+
+// Receive invoice created by invoice creation module
+router.post("/from-invoice", receiveInvoiceFromCreation);
 
 // Add partial payment (CRITICAL - recalculates balance)
 router.post("/:id/partial", addSmartPartialPayment);
@@ -58,3 +66,4 @@ router.post("/:id/partial", addSmartPartialPayment);
 router.get("/:paymentId/transactions", getPaymentTransactions);
 
 export default router;
+

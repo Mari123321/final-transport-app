@@ -59,11 +59,23 @@ export default (sequelize, DataTypes) => {
       },
       // Payment details
       payment_mode: {
-        type: DataTypes.STRING,
+        type: DataTypes.ENUM('CASH', 'CHEQUE', 'BANK', 'UPI'),
         allowNull: true,
-        defaultValue: 'Cash',
-        validate: {
-          isIn: [['Cash', 'Bank', 'UPI', 'Cheque', 'Online', 'Other']]
+        defaultValue: 'CASH',
+        set(value) {
+          // Normalize to UPPERCASE ENUM
+          if (!value) {
+            this.setDataValue('payment_mode', 'CASH');
+            return;
+          }
+          const normalized = String(value).toUpperCase();
+          // Handle common variations
+          const normalizedMap = {
+            'BANK TRANSFER': 'BANK',
+            'ONLINE': 'BANK',
+            'CHECK': 'CHEQUE'
+          };
+          this.setDataValue('payment_mode', normalizedMap[normalized] || normalized);
         }
       },
       payment_status: {

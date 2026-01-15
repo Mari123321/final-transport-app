@@ -1,5 +1,5 @@
 import { DriverExpense, Driver, Vehicle } from '../models/index.js';
-import { Op } from 'sequelize';
+import { Op, fn, col } from 'sequelize';
 
 // ================== CREATE DRIVER EXPENSE ==================
 export const createDriverExpense = async (req, res) => {
@@ -267,6 +267,57 @@ export const deleteDriverExpense = async (req, res) => {
       success: false,
       message: 'Failed to delete driver expense',
       error: error.message 
+    });
+  }
+};
+
+// ================== GET EXPENSE DATES BY DRIVER ==================
+// Matches Smart Payments getBillDatesForClient pattern
+export const getExpenseDatesByDriver = async (req, res) => {
+  try {
+    const { driver_id } = req.query;
+
+    console.log('📅 GET EXPENSE DATES REQUEST:', { driver_id });
+
+    if (!driver_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Driver ID is required',
+        detail: 'Please select a driver first'
+      });
+    }
+
+    // Fetch DISTINCT dates for this driver
+    const dates = await DriverExpense.findAll({
+      where: { driver_id },
+      attributes: [
+        [fn('DISTINCT', col('date')), 'date']
+      ],
+      raw: true,
+      order: [['date', 'DESC']]
+    });
+
+    console.log('✅ Found dates:', dates);
+
+    // Extract and sort dates
+    const sortedDates = dates
+      .filter(d => d.date)
+      .map(d => d.date)
+      .sort((a, b) => new Date(b) - new Date(a)); // Newest first
+
+    console.log('✅ Sorted dates:', sortedDates);
+
+    res.json({
+      success: true,
+      data: sortedDates,
+      count: sortedDates.length
+    });
+  } catch (error) {
+    console.error('❌ Error fetching expense dates by driver:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch expense dates',
+      detail: error.message
     });
   }
 };

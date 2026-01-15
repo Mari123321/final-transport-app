@@ -1,5 +1,5 @@
 import express from 'express';
-import { Op } from 'sequelize';
+import { Op, where, fn, col } from 'sequelize';
 import { Trip, Client, Driver, Vehicle } from '../models/index.js';
 
 const router = express.Router();
@@ -199,7 +199,83 @@ router.put('/:id/status', async (req, res) => {
   }
 });
 
-// Get trips by client ID
+/**
+ * CRITICAL: Get DISTINCT trip dates for a specific client
+ * This is the SINGLE SOURCE OF TRUTH for the date dropdown
+ * 
+ * Returns ONLY dates that:
+ * - Belong to the client
+ * - Have actual trips
+ * - Are not null/invalid
+ * 
+ * GET /api/trips/dates?clientId=XXX
+ * 
+ * Response: ["2026-01-05", "2026-01-08", ...]
+ */
+router.get('/dates', async (req, res) => {
+  try {
+    const { clientId } = req.query;
+
+    if (!clientId) {
+      return res.status(400).json({ error: 'Client ID is required' });
+    }
+
+    // Query DISTINCT dates for this client, excluding null/invalid dates
+    const trips = await Trip.findAll({
+      attributes: ['date'],
+      where: { 
+        client_id: clientId,
+        date: { [Op.not]: null } // CRITICAL: Only non-null dates
+      },
+      raw: true,
+      subQuery: false,
+    });
+
+    if (!trips || trips.length === 0) {
+      console.log(`No trips found for client ${clientId}`);
+      return res.json([]);
+    }
+
+    // Extract unique dates and sort descending
+    const uniqueDates = [...new Set(
+      trips
+        .map(t => {
+          if (!t.date) return null;
+          // Convert to string first, then extract YYYY-MM-DD part
+          let dateStr = t.date.toString().trim();
+          
+          // Handle various date formats
+          if (dateStr.length > 10) {
+            // If it's a longer format like "2026-01-08 18:30:00.000", extract just the date part
+            dateStr = dateStr.substring(0, 10);
+          }
+          
+          // Validate it's YYYY-MM-DD format
+          if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+            return dateStr;
+          }
+          
+          // Fallback: try ISO parsing
+          if (t.date.toISOString) {
+            return t.date.toISOString().split('T')[0];
+          }
+          
+          return null;
+        })
+        .filter(Boolean) // Remove any nulls
+    )].sort().reverse(); // Sort descending (newest first)
+
+    console.log(`Found ${uniqueDates.length} unique dates for client ${clientId}:`, uniqueDates);
+
+    // Return as simple array of ISO strings
+    res.json(uniqueDates);
+  } catch (err) {
+    console.error('Error fetching trip dates:', err);
+    res.status(500).json({ error: 'Failed to fetch trip dates' });
+  }
+});
+
+// Get trips by client ID - with valid date extraction
 router.get('/by-client/:clientId', async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -209,22 +285,41 @@ router.get('/by-client/:clientId', async (req, res) => {
     }
 
     const trips = await Trip.findAll({
-      where: { client_id: clientId },
+      where: { 
+        client_id: clientId,
+        // CRITICAL: Only return trips with valid dates
+        date: {
+          [Op.not]: null
+        }
+      },
       include: [
         { model: Client, as: 'client', attributes: ['client_id', 'client_name'] },
         { model: Driver, as: 'driver', attributes: ['id', 'name', 'license_number'] },
         { model: Vehicle, as: 'vehicle', attributes: ['vehicle_id', 'vehicle_number'] },
       ],
-      order: [['dispatch_date', 'DESC']],
+      order: [['date', 'DESC']],
     });
 
-    // Extract unique dates from trips
-    const uniqueDates = [...new Set(trips.map(trip => trip.dispatch_date))]
-      .filter(Boolean)
+    if (trips.length === 0) {
+      return res.json({ 
+        trips: [],
+        dates: [],
+        count: 0 
+      });
+    }
+
+    // Extract unique dates from trip.date (source of truth for invoice dates)
+    const uniqueDates = [...new Set(trips
+      .map(trip => {
+        // Use trip.date as the source for invoice dates
+        const dateVal = trip.date ? new Date(trip.date).toISOString().split('T')[0] : null;
+        return dateVal;
+      })
+      .filter(Boolean))]
       .sort((a, b) => new Date(b) - new Date(a))
-      .map(date => ({
-        iso: date,
-        display: new Date(date).toLocaleDateString('en-IN', {
+      .map(dateStr => ({
+        iso: dateStr, // ISO format for API
+        display: new Date(dateStr + 'T00:00:00').toLocaleDateString('en-IN', {
           year: 'numeric',
           month: 'short',
           day: 'numeric',
@@ -242,7 +337,7 @@ router.get('/by-client/:clientId', async (req, res) => {
   }
 });
 
-// Filter trips by client ID and date
+// Filter trips by client ID and specific date
 router.get('/filter', async (req, res) => {
   try {
     const { clientId, date } = req.query;
@@ -251,22 +346,63 @@ router.get('/filter', async (req, res) => {
       return res.status(400).json({ error: 'Client ID is required' });
     }
 
-    const where = { client_id: clientId };
-
-    // Add date filter if provided
-    if (date) {
-      where.dispatch_date = date;
+    if (!date) {
+      return res.status(400).json({ error: 'Date is required' });
     }
 
+    // CRITICAL FIX: Compare dates by casting to DATE (not datetime)
+    // This avoids all timezone issues
+    // In SQL: WHERE DATE(trip_date) = '2026-01-01'
+    // In Sequelize: Use raw query with DATE comparison
+    
+    let normalizedDate = date;
+    
+    // Ensure YYYY-MM-DD format
+    if (date.length !== 10 || !date.match(/^\d{4}-\d{2}-\d{2}$/)) {
+      const parsedDate = new Date(date);
+      if (!isNaN(parsedDate.getTime())) {
+        normalizedDate = parsedDate.toISOString().split('T')[0];
+      }
+    }
+
+    console.log(`[DEBUG] Filtering trips:`);
+    console.log(`  clientId: ${clientId}`);
+    console.log(`  requested date: ${normalizedDate}`);
+
+    // Use Sequelize DATE() function to extract date part only
+    // This compares DATE(2026-01-01 14:30:00) = '2026-01-01'
+    // Avoids all timezone issues by comparing date parts only
     const trips = await Trip.findAll({
-      where,
+      where: {
+        client_id: clientId,
+        [Op.and]: where(
+          fn('DATE', col('date')),
+          Op.eq,
+          normalizedDate
+        )
+      },
       include: [
         { model: Client, as: 'client', attributes: ['client_id', 'client_name'] },
         { model: Driver, as: 'driver', attributes: ['id', 'name', 'license_number'] },
         { model: Vehicle, as: 'vehicle', attributes: ['vehicle_id', 'vehicle_number'] },
       ],
-      order: [['dispatch_date', 'DESC'], ['date', 'DESC']],
+      order: [['date', 'DESC']],
     });
+
+    if (trips.length === 0) {
+      console.log(`  RESULT: 0 trips found`);
+      return res.json({ 
+        trips: [],
+        count: 0,
+        summary: {
+          totalAmount: 0,
+          totalPaid: 0,
+          totalPending: 0
+        }
+      });
+    }
+
+    console.log(`  RESULT: ${trips.length} trips found`);
 
     const totalAmount = trips.reduce((sum, trip) => sum + (Number(trip.amount) || 0), 0);
     const totalPaid = trips.reduce((sum, trip) => sum + (Number(trip.amount_paid) || 0), 0);

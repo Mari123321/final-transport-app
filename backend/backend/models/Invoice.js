@@ -5,6 +5,12 @@ export default (sequelize) => {
     "Invoice",
     {
       invoice_id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+      invoice_number: { 
+        type: DataTypes.STRING, 
+        allowNull: false, 
+        unique: true,
+        comment: "Unique invoice identifier (e.g., IN-001, IN-002)"
+      },
       client_id: { type: DataTypes.INTEGER, allowNull: false },
       total_amount: { type: DataTypes.FLOAT, defaultValue: 0 },
       amount_paid: { type: DataTypes.FLOAT, defaultValue: 0 },

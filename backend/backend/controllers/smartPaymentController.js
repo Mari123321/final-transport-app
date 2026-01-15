@@ -18,7 +18,7 @@
 import db from "../models/index.js";
 import { Op, fn, col, literal } from "sequelize";
 
-const { Client, Payment, Invoice, PaymentTransaction, sequelize } = db;
+const { Client, Payment, Invoice, PaymentTransaction, Trip, sequelize } = db;
 
 // ============================================================
 // GET ALL CLIENTS - For dropdown selection
@@ -730,6 +730,370 @@ async function updateOverdueStatus() {
 }
 
 // ============================================================
+// RECEIVE INVOICE FROM INVOICE CREATION MODULE
+// Automatically adds invoice to Smart Payment system
+// ============================================================
+export const receiveInvoiceFromCreation = async (req, res) => {
+  try {
+    const {
+      invoiceId,
+      clientId,
+      clientName,
+      invoiceCreatedDate,
+      invoiceAmount,
+      invoiceStatus,
+      sourceModule,
+    } = req.body;
+
+    // Validate required fields
+    if (!invoiceId || !clientId || !invoiceCreatedDate || !invoiceAmount) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required fields",
+        detail:
+          "invoiceId, clientId, invoiceCreatedDate, and invoiceAmount are required",
+      });
+    }
+
+    // Get the actual client details
+    const client = await Client.findByPk(clientId, {
+      attributes: ["client_id", "client_name"],
+    });
+
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        error: "Client not found",
+        detail: `Client with ID ${clientId} does not exist`,
+      });
+    }
+
+    // Verify invoice exists in the system
+    const invoice = await Invoice.findByPk(invoiceId, {
+      attributes: [
+        "invoice_id",
+        "client_id",
+        "total_amount",
+        "amount_paid",
+        "pending_amount",
+        "payment_status",
+        "date",
+      ],
+    });
+
+    if (!invoice) {
+      return res.status(404).json({
+        success: false,
+        error: "Invoice not found in system",
+        detail: `Invoice with ID ${invoiceId} does not exist`,
+      });
+    }
+
+    // Verify invoice belongs to the same client
+    if (invoice.client_id !== clientId) {
+      return res.status(400).json({
+        success: false,
+        error: "Client mismatch",
+        detail: `Invoice ${invoiceId} does not belong to client ${clientId}`,
+      });
+    }
+
+    // Log invoice creation event (for audit trail)
+    console.log(
+      `✅ Invoice ${invoiceId} received from ${sourceModule} for client ${client.client_name}`
+    );
+
+    // Response indicating invoice is now available in Smart Payment
+    res.json({
+      success: true,
+      message: `Invoice ${invoiceId} successfully loaded in Smart Payment system`,
+      data: {
+        invoiceId: invoice.invoice_id,
+        clientId: client.client_id,
+        clientName: client.client_name,
+        invoiceCreatedDate: invoice.date,
+        totalAmount: invoice.total_amount,
+        paidAmount: invoice.amount_paid,
+        pendingAmount: invoice.pending_amount,
+        paymentStatus: invoice.payment_status,
+        sourceModule,
+        timestamp: new Date().toISOString(),
+      },
+      note: "Invoice is now available under 'Invoices created by requesting client' in Smart Payments",
+    });
+  } catch (error) {
+    console.error("Error receiving invoice from creation module:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to process invoice",
+      detail: error.message,
+    });
+  }
+};
+
+// ============================================================
+// CREATE PAYMENT FOR TRIP - Direct trip payment with validation
+// ============================================================
+export const createTripPayment = async (req, res) => {
+  // STEP 1: LOG REQUEST BODY FOR DEBUGGING
+  console.log('\n=== CREATE TRIP PAYMENT REQUEST ===');
+  console.log('Timestamp:', new Date().toISOString());
+  console.log('Request Body:', JSON.stringify(req.body, null, 2));
+  console.log('Request Headers:', req.headers);
+  
+  const t = await sequelize.transaction();
+  
+  try {
+    const { 
+      trip_id, 
+      tripId,
+      client_id,
+      clientId, 
+      amount, 
+      payment_mode, 
+      paymentMode,
+      payment_date,
+      paymentDate,
+      remarks 
+    } = req.body;
+
+    // Normalize field names (handle both snake_case and camelCase)
+    const effectiveTripId = trip_id || tripId;
+    const effectiveClientId = client_id || clientId;
+    const effectivePaymentMode = payment_mode || paymentMode || 'CASH';
+    const effectivePaymentDate = payment_date || paymentDate || new Date().toISOString().split('T')[0];
+
+    console.log('\nNormalized values:');
+    console.log('- Trip ID:', effectiveTripId);
+    console.log('- Client ID:', effectiveClientId);
+    console.log('- Amount:', amount, typeof amount);
+    console.log('- Payment Mode:', effectivePaymentMode);
+    console.log('- Payment Date:', effectivePaymentDate);
+
+    // STEP 2: COMPREHENSIVE VALIDATION
+    const validationErrors = [];
+
+    if (!effectiveTripId) {
+      validationErrors.push({ field: 'trip_id', message: 'Trip ID is required' });
+    }
+
+    if (!effectiveClientId) {
+      validationErrors.push({ field: 'client_id', message: 'Client ID is required' });
+    }
+
+    if (!amount) {
+      validationErrors.push({ field: 'amount', message: 'Payment amount is required' });
+    } else if (isNaN(Number(amount))) {
+      validationErrors.push({ field: 'amount', message: 'Amount must be a valid number' });
+    } else if (Number(amount) <= 0) {
+      validationErrors.push({ field: 'amount', message: 'Amount must be greater than 0' });
+    }
+
+    const validPaymentModes = ['CASH', 'CHEQUE', 'BANK', 'UPI'];
+    if (!validPaymentModes.includes(effectivePaymentMode.toUpperCase())) {
+      validationErrors.push({ 
+        field: 'payment_mode', 
+        message: `Payment mode must be one of: ${validPaymentModes.join(', ')}`,
+        received: effectivePaymentMode
+      });
+    }
+
+    if (validationErrors.length > 0) {
+      console.log('\n❌ VALIDATION FAILED:');
+      console.log(JSON.stringify(validationErrors, null, 2));
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        error: 'Validation failed',
+        validationErrors,
+        detail: validationErrors.map(e => `${e.field}: ${e.message}`).join('; ')
+      });
+    }
+
+    // STEP 3: FETCH TRIP WITH FULL DETAILS
+    const trip = await Trip.findByPk(effectiveTripId, {
+      include: [
+        { model: Client, as: 'client', attributes: ['client_id', 'client_name'] }
+      ],
+      transaction: t
+    });
+
+    if (!trip) {
+      console.log(`\n❌ Trip not found: ${effectiveTripId}`);
+      await t.rollback();
+      return res.status(404).json({
+        success: false,
+        error: 'Trip not found',
+        detail: `Trip with ID ${effectiveTripId} does not exist`,
+        field: 'trip_id'
+      });
+    }
+
+    console.log('\n✅ Trip found:');
+    console.log('- Trip ID:', trip.trip_id);
+    console.log('- Client:', trip.client?.client_name);
+    console.log('- Total Amount:', trip.amount);
+    console.log('- Paid Amount:', trip.amount_paid);
+    console.log('- Pending Amount:', (trip.amount || 0) - (trip.amount_paid || 0));
+
+    // Verify client matches
+    if (trip.client_id !== parseInt(effectiveClientId)) {
+      console.log(`\n❌ Client mismatch: Trip belongs to ${trip.client_id}, but ${effectiveClientId} was provided`);
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        error: 'Client mismatch',
+        detail: `Trip ${effectiveTripId} belongs to client ${trip.client_id}, not ${effectiveClientId}`,
+        field: 'client_id'
+      });
+    }
+
+    // STEP 4: CALCULATE AMOUNTS
+    const paymentAmount = Number(amount);
+    const totalAmount = Number(trip.amount) || 0;
+    const currentPaid = Number(trip.amount_paid) || 0;
+    const currentPending = totalAmount - currentPaid;
+
+    console.log('\n💰 Amount Calculations:');
+    console.log('- Total Amount:', totalAmount);
+    console.log('- Current Paid:', currentPaid);
+    console.log('- Current Pending:', currentPending);
+    console.log('- Payment Amount:', paymentAmount);
+
+    // STEP 5: OVERPAYMENT PREVENTION
+    if (paymentAmount > currentPending) {
+      console.log(`\n❌ OVERPAYMENT DETECTED: Payment ${paymentAmount} exceeds pending ${currentPending}`);
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        error: 'Payment exceeds pending amount',
+        detail: `Cannot pay ₹${paymentAmount}. Maximum payable is ₹${currentPending}`,
+        field: 'amount',
+        maxPayable: currentPending,
+        totalAmount,
+        currentPaid,
+        currentPending
+      });
+    }
+
+    // STEP 6: UPDATE TRIP AMOUNTS
+    const newPaidAmount = currentPaid + paymentAmount;
+    const newPendingAmount = totalAmount - newPaidAmount;
+
+    console.log('\n📊 New Amounts:');
+    console.log('- New Paid Amount:', newPaidAmount);
+    console.log('- New Pending Amount:', newPendingAmount);
+    console.log('- Payment Status:', newPendingAmount <= 0 ? 'PAID' : newPaidAmount > 0 ? 'PARTIAL' : 'PENDING');
+
+    await trip.update({
+      amount_paid: newPaidAmount,
+      payment_mode: effectivePaymentMode.toUpperCase()
+    }, { transaction: t });
+
+    // STEP 7: CREATE PAYMENT TRANSACTION RECORD (if PaymentTransaction model exists)
+    try {
+      await PaymentTransaction.create({
+        trip_id: effectiveTripId,
+        client_id: effectiveClientId,
+        transaction_type: 'payment',
+        amount: paymentAmount,
+        balance_before: currentPending,
+        balance_after: newPendingAmount,
+        payment_mode: effectivePaymentMode.toUpperCase(),
+        remarks: remarks || `Payment of ₹${paymentAmount} for trip ${effectiveTripId}`,
+        transaction_date: new Date(effectivePaymentDate),
+      }, { transaction: t });
+      console.log('✅ Payment transaction record created');
+    } catch (transErr) {
+      console.log('⚠️  Payment transaction record creation failed (non-critical):', transErr.message);
+      // Don't fail the whole transaction if this is just for audit
+    }
+
+    // STEP 8: COMMIT TRANSACTION
+    await t.commit();
+    console.log('\n✅ TRANSACTION COMMITTED SUCCESSFULLY');
+
+    // STEP 9: FETCH UPDATED TRIP
+    const updatedTrip = await Trip.findByPk(effectiveTripId, {
+      include: [
+        { model: Client, as: 'client', attributes: ['client_id', 'client_name'] }
+      ]
+    });
+
+    // STEP 10: RETURN SUCCESS RESPONSE
+    const response = {
+      success: true,
+      message: `Payment of ₹${paymentAmount} recorded successfully`,
+      data: {
+        trip_id: updatedTrip.trip_id,
+        client_id: updatedTrip.client_id,
+        client_name: updatedTrip.client?.client_name,
+        payment_amount: paymentAmount,
+        payment_mode: effectivePaymentMode.toUpperCase(),
+        payment_date: effectivePaymentDate,
+        total_amount: totalAmount,
+        paid_amount: newPaidAmount,
+        pending_amount: newPendingAmount,
+        payment_status: newPendingAmount <= 0 ? 'Paid' : newPaidAmount > 0 ? 'Partial' : 'Pending',
+        previous_paid: currentPaid,
+        previous_pending: currentPending
+      }
+    };
+
+    console.log('\n✅ RESPONSE:');
+    console.log(JSON.stringify(response, null, 2));
+    console.log('=== END CREATE TRIP PAYMENT ===\n');
+
+    return res.status(201).json(response);
+
+  } catch (error) {
+    await t.rollback();
+    console.log('\n❌ ERROR IN CREATE TRIP PAYMENT:');
+    console.log('Error name:', error.name);
+    console.log('Error message:', error.message);
+    console.log('Error stack:', error.stack);
+
+    // ENHANCED ERROR RESPONSE WITH SPECIFIC FIELD INFO
+    if (error.name === 'SequelizeValidationError') {
+      const validationErrors = error.errors.map(err => ({
+        field: err.path,
+        message: err.message,
+        value: err.value,
+        validatorKey: err.validatorKey
+      }));
+
+      console.log('\nSequelize Validation Errors:');
+      console.log(JSON.stringify(validationErrors, null, 2));
+
+      return res.status(400).json({
+        success: false,
+        error: 'Sequelize validation failed',
+        validationErrors,
+        detail: validationErrors.map(e => `${e.field}: ${e.message}`).join('; '),
+        originalError: error.message
+      });
+    }
+
+    if (error.name === 'SequelizeDatabaseError') {
+      console.log('\nDatabase Error:', error.original?.message);
+      return res.status(500).json({
+        success: false,
+        error: 'Database error',
+        detail: error.original?.message || error.message,
+        sqlMessage: error.original?.sqlMessage
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to create payment',
+      detail: 'An unexpected error occurred while processing payment',
+      errorType: error.name
+    });
+  }
+};
+
+// ============================================================
 // HELPER: Format Date for Display
 // ============================================================
 function formatDateForDisplay(dateStr) {
@@ -754,4 +1118,6 @@ export default {
   getPaymentTransactions,
   createPaymentFromInvoice,
   getInvoicesForClient,
+  receiveInvoiceFromCreation,
+  createTripPayment,
 };

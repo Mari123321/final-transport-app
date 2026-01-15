@@ -1,421 +1,719 @@
-import React, { useEffect, useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import {
   Box,
-  Typography,
+  Container,
   Grid,
   Card,
-  Avatar,
-  Paper,
-  List,
-  ListItem,
-  ListItemIcon,
-  ListItemText,
-  Divider,
+  CardContent,
+  Typography,
   CircularProgress,
   Button,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogContentText,
-  DialogActions,
-  Alert,
+  TextField,
+  Select,
+  MenuItem,
+  FormControl,
+  InputLabel,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Chip,
+  Paper,
+  Divider,
+  Skeleton,
 } from "@mui/material";
-import MonetizationOnIcon from "@mui/icons-material/MonetizationOn";
-import DirectionsCarIcon from "@mui/icons-material/DirectionsCar";
-import GroupIcon from "@mui/icons-material/Group";
-import TripOriginIcon from "@mui/icons-material/TripOrigin";
-import AccountBoxIcon from "@mui/icons-material/AccountBox";
-import ReceiptIcon from "@mui/icons-material/Receipt";
-import DataUsageIcon from "@mui/icons-material/DataUsage";
-import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
+import {
+  People as PeopleIcon,
+  DirectionsCar as DirectionsCarIcon,
+  Receipt as ReceiptIcon,
+  AttachMoney as AttachMoneyIcon,
+  TrendingUp as TrendingUpIcon,
+  Schedule as ScheduleIcon,
+  CheckCircle as CheckCircleIcon,
+  PieChart as PieChartIcon,
+  MoreVert as MoreVertIcon,
+} from "@mui/icons-material";
 import {
   BarChart,
   Bar,
+  PieChart,
+  Pie,
+  Cell,
   XAxis,
   YAxis,
-  Tooltip,
-  ResponsiveContainer,
   CartesianGrid,
+  Tooltip as RechartsTooltip,
+  ResponsiveContainer,
 } from "recharts";
-import NotificationBell from "./NotificationBell";
-import { generateDemoData, clearDemoData } from "../api/demo";
-import { toast } from "react-toastify";
 
-const iconStyle = (color) => ({
-  backgroundColor: color,
-  color: "white",
-  width: 48,
-  height: 48,
-});
+// ============================================================
+// CONSTANTS
+// ============================================================
 
-const getActivityIcon = (type) => {
-  switch (type) {
-    case "trip":
-      return <MonetizationOnIcon />;
-    case "client":
-      return <GroupIcon />;
-    case "vehicle":
-      return <DirectionsCarIcon />;
-    default:
-      return <ReceiptIcon />;
-  }
+const API_BASE = "http://localhost:5000/api";
+const COLORS = {
+  primary: "#1976d2",
+  secondary: "#f57c00",
+  success: "#388e3c",
+  warning: "#ff9800",
+  danger: "#d32f2f",
+  neutral: "#757575",
+  background: "#f5f7fa",
+  border: "#e0e0e0",
 };
 
-const getActivityColor = (type) => {
-  switch (type) {
-    case "trip":
-      return "#43a047";
-    case "client":
-      return "#1976d2";
-    case "vehicle":
-      return "#ffb300";
-    default:
-      return "#e53935";
-  }
+const STATUS_COLORS = {
+  PAID: COLORS.success,
+  PARTIAL: COLORS.warning,
+  UNPAID: COLORS.danger,
+  Completed: COLORS.success,
+  Running: COLORS.warning,
+  Pending: COLORS.neutral,
 };
+
+// ============================================================
+// METRIC CARD COMPONENT
+// ============================================================
+
+const MetricCard = ({ title, value, icon: Icon, loading, error, subtitle, color = COLORS.primary }) => {
+  return (
+    <Card sx={{ height: "100%", boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
+      <CardContent>
+        <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <Box>
+            <Typography color="textSecondary" sx={{ fontSize: "0.875rem", mb: 0.5 }}>
+              {title}
+            </Typography>
+            {loading ? (
+              <Skeleton width="80px" height="32px" sx={{ mt: 1 }} />
+            ) : error ? (
+              <Typography sx={{ color: COLORS.danger, fontSize: "0.875rem" }}>Error</Typography>
+            ) : (
+              <>
+                <Typography sx={{ fontSize: "1.75rem", fontWeight: 700, color }}>
+                  {typeof value === "number" ? value.toLocaleString() : value}
+                </Typography>
+                {subtitle && (
+                  <Typography sx={{ fontSize: "0.75rem", color: "textSecondary", mt: 0.5 }}>
+                    {subtitle}
+                  </Typography>
+                )}
+              </>
+            )}
+          </Box>
+          <Box
+            sx={{
+              p: 1.5,
+              borderRadius: 1,
+              backgroundColor: `${color}15`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Icon sx={{ color, fontSize: "1.5rem" }} />
+          </Box>
+        </Box>
+      </CardContent>
+    </Card>
+  );
+};
+
+// ============================================================
+// EMPTY STATE COMPONENT
+// ============================================================
+
+const EmptyState = ({ message = "No data available" }) => (
+  <Box
+    sx={{
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      py: 6,
+      color: "textSecondary",
+    }}
+  >
+    <MoreVertIcon sx={{ fontSize: "3rem", mb: 2, opacity: 0.3 }} />
+    <Typography>{message}</Typography>
+  </Box>
+);
+
+// ============================================================
+// RECENT ACTIVITY TABLE COMPONENT
+// ============================================================
+
+const RecentActivityTable = ({ title, data, loading, columns, icon: Icon }) => {
+  return (
+    <Card sx={{ boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
+      <CardContent>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
+          {Icon && <Icon sx={{ color: COLORS.primary }} />}
+          <Typography variant="h6" sx={{ fontWeight: 600 }}>
+            {title}
+          </Typography>
+        </Box>
+        <Divider sx={{ mb: 2 }} />
+
+        {loading ? (
+          <Box sx={{ py: 3 }}>
+            {[1, 2, 3].map((i) => (
+              <Skeleton key={i} height={50} sx={{ mb: 1 }} />
+            ))}
+          </Box>
+        ) : !data || data.length === 0 ? (
+          <EmptyState message={`No ${title.toLowerCase()} available`} />
+        ) : (
+          <TableContainer sx={{ maxHeight: 400 }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow sx={{ backgroundColor: "#f5f7fa" }}>
+                  {columns.map((col) => (
+                    <TableCell key={col.id} sx={{ fontWeight: 600, fontSize: "0.875rem" }}>
+                      {col.label}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {data.map((row, idx) => (
+                  <TableRow key={idx}>
+                    {columns.map((col) => (
+                      <TableCell key={col.id} sx={{ fontSize: "0.875rem" }}>
+                        {col.render ? col.render(row) : row[col.id] || "-"}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+// ============================================================
+// MAIN DASHBOARD COMPONENT
+// ============================================================
 
 const Dashboard = () => {
-  const [drivers, setDrivers] = useState([]);
-  const [vehicles, setVehicles] = useState([]);
-  const [clients, setClients] = useState([]);
-  const [trips, setTrips] = useState([]);
-  const [amounts, setAmounts] = useState([]);
-  const [activities, setActivities] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [revenueData, setRevenueData] = useState([]);
-  const [openDialog, setOpenDialog] = useState(false);
-  const [dialogType, setDialogType] = useState(''); // 'generate' or 'clear'
-  const [demoLoading, setDemoLoading] = useState(false);
+  // ============================================================
+  // STATE
+  // ============================================================
 
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      const res = await fetch("/api/dashboard");
-      if (!res.ok) throw new Error("Failed to fetch dashboard");
-      const data = await res.json();
-
-      setDrivers(data.drivers || []);
-      setVehicles(data.vehicles || []);
-      setClients(data.clients || []);
-      setTrips(data.trips || []);
-      setAmounts(data.invoices || []);
-      setActivities(data.activities || []);
-      setRevenueData(data.revenueByMonth || []);
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  const handleGenerateDemoData = async () => {
-    setDemoLoading(true);
-    try {
-      const response = await generateDemoData();
-      if (response.success) {
-        toast.success(`Demo data generated! ${response.data.clients} clients, ${response.data.drivers} drivers, ${response.data.vehicles} vehicles, ${response.data.trips} trips created.`);
-        setOpenDialog(false);
-        fetchData(); // Refresh dashboard
-      }
-    } catch (error) {
-      toast.error(error.response?.data?.message || 'Failed to generate demo data');
-    } finally {
-      setDemoLoading(false);
-    }
-  };
-
-  const handleClearDemoData = async () => {
-    setDemoLoading(true);
-    try {
-      const response = await clearDemoData();
-      if (response.success) {
-        toast.success('All demo data cleared successfully!');
-        setOpenDialog(false);
-        fetchData(); // Refresh dashboard
-      }
-    } catch (error) {
-      toast.error(error.response?.data?.message || 'Failed to clear demo data');
-    } finally {
-      setDemoLoading(false);
-    }
-  };
-
-  const openGenerateDialog = () => {
-    setDialogType('generate');
-    setOpenDialog(true);
-  };
-
-  const openClearDialog = () => {
-    setDialogType('clear');
-    setOpenDialog(true);
-  };
-
-  const handleDialogClose = () => {
-    setOpenDialog(false);
-  };
-
-  const handleDialogConfirm = () => {
-    if (dialogType === 'generate') {
-      handleGenerateDemoData();
-    } else {
-      handleClearDemoData();
-    }
-  };
-
-  if (loading) {
-    return (
-      <Box
-        sx={{
-          height: "80vh",
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-        }}
-      >
-        <CircularProgress />
-      </Box>
-    );
-  }
-
-  const totalPendingAmounts = amounts.reduce(
-    (acc, item) => acc + (item.amount || 0),
-    0
-  );
-
-  const currencyFormat = new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
+  const [metrics, setMetrics] = useState({
+    totalClients: 0,
+    totalVehicles: 0,
+    totalTrips: 0,
+    totalInvoices: 0,
+    totalBills: 0,
+    totalRevenue: 0,
+    totalPending: 0,
+    totalPaid: 0,
   });
 
-  const summaryStats = [
-    {
-      title: "Total Drivers",
-      value: drivers.length,
-      extra: "+0 this month",
-      icon: <AccountBoxIcon />,
-      color: "#1976d2",
-    },
-    {
-      title: "Total Clients",
-      value: clients.length,
-      extra: "+0 this month",
-      icon: <GroupIcon />,
-      color: "#2e7d32",
-    },
-    {
-      title: "Total Vehicles",
-      value: vehicles.length,
-      icon: <DirectionsCarIcon />,
-      color: "#ff9800",
-    },
-    {
-      title: "Total Trips",
-      value: trips.length,
-      extra: "+0 this week",
-      icon: <TripOriginIcon />,
-      color: "#ab47bc",
-    },
-    {
-      title: "Pending Amounts",
-      value: currencyFormat.format(totalPendingAmounts),
-      extra: `${amounts.length} invoices`,
-      icon: <ReceiptIcon />,
-      color: "#e53935",
-    },
-  ];
+  const [loading, setLoading] = useState({
+    metrics: true,
+    trips: true,
+    invoices: true,
+    bills: true,
+    analytics: true,
+  });
+
+  const [errors, setErrors] = useState({});
+
+  const [recentTrips, setRecentTrips] = useState([]);
+  const [recentInvoices, setRecentInvoices] = useState([]);
+  const [recentBills, setRecentBills] = useState([]);
+
+  const [analyticsData, setAnalyticsData] = useState({
+    invoiceStatus: [],
+    tripsPerClient: [],
+  });
+
+  // ============================================================
+  // API CALLS
+  // ============================================================
+
+  const fetchMetrics = useCallback(async () => {
+    try {
+      setLoading((prev) => ({ ...prev, metrics: true }));
+      setErrors((prev) => ({ ...prev, metrics: null }));
+
+      const [clientsRes, vehiclesRes, tripsRes, invoicesRes, billsRes] = await Promise.all([
+        axios.get(`${API_BASE}/clients`),
+        axios.get(`${API_BASE}/vehicles`),
+        axios.get(`${API_BASE}/trips`),
+        axios.get(`${API_BASE}/invoices`),
+        axios.get(`${API_BASE}/bills`),
+      ]);
+
+      const invoices = Array.isArray(invoicesRes.data) ? invoicesRes.data : [];
+      const bills = billsRes.data?.bills || [];
+
+      const totalRevenue = invoices.reduce((sum, inv) => sum + (parseFloat(inv.total_amount) || 0), 0);
+      const totalPaid = invoices.reduce((sum, inv) => sum + (parseFloat(inv.amount_paid) || 0), 0);
+      const totalPending = totalRevenue - totalPaid;
+
+      setMetrics({
+        totalClients: Array.isArray(clientsRes.data) ? clientsRes.data.length : 0,
+        totalVehicles: Array.isArray(vehiclesRes.data) ? vehiclesRes.data.length : 0,
+        totalTrips: Array.isArray(tripsRes.data) ? tripsRes.data.trips?.length || 0 : 0,
+        totalInvoices: invoices.length,
+        totalBills: bills.length,
+        totalRevenue: Math.round(totalRevenue),
+        totalPending: Math.round(totalPending),
+        totalPaid: Math.round(totalPaid),
+      });
+    } catch (err) {
+      console.error("Error fetching metrics:", err);
+      setErrors((prev) => ({ ...prev, metrics: "Failed to load metrics" }));
+    } finally {
+      setLoading((prev) => ({ ...prev, metrics: false }));
+    }
+  }, []);
+
+  const fetchRecentTrips = useCallback(async () => {
+    try {
+      setLoading((prev) => ({ ...prev, trips: true }));
+      const res = await axios.get(`${API_BASE}/trips`);
+      const trips = res.data?.trips || [];
+      setRecentTrips(trips.slice(0, 5));
+    } catch (err) {
+      console.error("Error fetching trips:", err);
+      setErrors((prev) => ({ ...prev, trips: "Failed to load trips" }));
+    } finally {
+      setLoading((prev) => ({ ...prev, trips: false }));
+    }
+  }, []);
+
+  const fetchRecentInvoices = useCallback(async () => {
+    try {
+      setLoading((prev) => ({ ...prev, invoices: true }));
+      const res = await axios.get(`${API_BASE}/invoices`);
+      const invoices = Array.isArray(res.data) ? res.data : [];
+      setRecentInvoices(invoices.slice(0, 5));
+    } catch (err) {
+      console.error("Error fetching invoices:", err);
+      setErrors((prev) => ({ ...prev, invoices: "Failed to load invoices" }));
+    } finally {
+      setLoading((prev) => ({ ...prev, invoices: false }));
+    }
+  }, []);
+
+  const fetchRecentBills = useCallback(async () => {
+    try {
+      setLoading((prev) => ({ ...prev, bills: true }));
+      const res = await axios.get(`${API_BASE}/bills`);
+      const bills = res.data?.bills || [];
+      setRecentBills(bills.slice(0, 5));
+    } catch (err) {
+      console.error("Error fetching bills:", err);
+      setErrors((prev) => ({ ...prev, bills: "Failed to load bills" }));
+    } finally {
+      setLoading((prev) => ({ ...prev, bills: false }));
+    }
+  }, []);
+
+  const fetchAnalytics = useCallback(async () => {
+    try {
+      setLoading((prev) => ({ ...prev, analytics: true }));
+
+      const invoicesRes = await axios.get(`${API_BASE}/invoices`);
+      const invoices = Array.isArray(invoicesRes.data) ? invoicesRes.data : [];
+
+      // Invoice status breakdown
+      const statusCounts = {
+        "Paid": 0,
+        "Partial": 0,
+        "Unpaid": 0,
+      };
+
+      invoices.forEach((inv) => {
+        const status = inv.payment_status?.toLowerCase() || "unpaid";
+        if (status.includes("paid") && inv.amount_paid === inv.total_amount) {
+          statusCounts["Paid"]++;
+        } else if (status.includes("paid") && inv.amount_paid > 0) {
+          statusCounts["Partial"]++;
+        } else {
+          statusCounts["Unpaid"]++;
+        }
+      });
+
+      const invoiceStatus = Object.entries(statusCounts)
+        .filter(([_, count]) => count > 0)
+        .map(([name, value]) => ({ name, value }));
+
+      // Trips per client
+      const tripsRes = await axios.get(`${API_BASE}/trips`);
+      const trips = tripsRes.data?.trips || [];
+      const tripsByClient = {};
+
+      trips.forEach((trip) => {
+        const clientName = trip.client?.client_name || "Unknown";
+        tripsByClient[clientName] = (tripsByClient[clientName] || 0) + 1;
+      });
+
+      const tripsPerClient = Object.entries(tripsByClient)
+        .slice(0, 6)
+        .map(([name, value]) => ({ name, trips: value }));
+
+      setAnalyticsData({
+        invoiceStatus: invoiceStatus.length > 0 ? invoiceStatus : [],
+        tripsPerClient: tripsPerClient.length > 0 ? tripsPerClient : [],
+      });
+    } catch (err) {
+      console.error("Error fetching analytics:", err);
+      setErrors((prev) => ({ ...prev, analytics: "Failed to load analytics" }));
+    } finally {
+      setLoading((prev) => ({ ...prev, analytics: false }));
+    }
+  }, []);
+
+  // ============================================================
+  // EFFECTS
+  // ============================================================
+
+  useEffect(() => {
+    fetchMetrics();
+    fetchRecentTrips();
+    fetchRecentInvoices();
+    fetchRecentBills();
+    fetchAnalytics();
+  }, [fetchMetrics, fetchRecentTrips, fetchRecentInvoices, fetchRecentBills, fetchAnalytics]);
+
+  // ============================================================
+  // RENDER
+  // ============================================================
 
   return (
-    <Box
-      sx={{
-        background: "#f4f6fa",
-        minHeight: "100vh",
-        pb: 3,
-        overflow: "hidden",
-      }}
-    >
-      {/* Notification bell header */}
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 20px" }}>
-        <Box sx={{ display: 'flex', gap: 2 }}>
-          <Button
-            variant="contained"
-            color="success"
-            size="small"
-            startIcon={<DataUsageIcon />}
-            onClick={openGenerateDialog}
-            disabled={demoLoading}
-          >
-            Generate Demo Data (10 records)
-          </Button>
-          <Button
-            variant="outlined"
-            color="error"
-            size="small"
-            startIcon={<DeleteSweepIcon />}
-            onClick={openClearDialog}
-            disabled={demoLoading}
-          >
-            Clear All Data
-          </Button>
+    <Box sx={{ backgroundColor: COLORS.background, minHeight: "100vh", py: 4 }}>
+      <Container maxWidth="xl">
+        {/* PAGE HEADER */}
+        <Box sx={{ mb: 4 }}>
+          <Typography variant="h4" sx={{ fontWeight: 700, mb: 0.5 }}>
+            Dashboard
+          </Typography>
+          <Typography color="textSecondary">
+            Welcome back! Here's an overview of your transport operations.
+          </Typography>
         </Box>
-        <NotificationBell />
-      </header>
 
-      {/* Demo Data Dialog */}
-      <Dialog open={openDialog} onClose={handleDialogClose}>
-        <DialogTitle>
-          {dialogType === 'generate' ? 'Generate Demo Data?' : 'Clear All Data?'}
-        </DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            {dialogType === 'generate' 
-              ? 'This will create 10 sample clients, drivers, vehicles, and trips for testing purposes.'
-              : 'This will permanently delete ALL data from the database including clients, drivers, vehicles, trips, invoices, and expenses. This action cannot be undone!'}
-          </DialogContentText>
-          {dialogType === 'clear' && (
-            <Alert severity="warning" sx={{ mt: 2 }}>
-              <strong>Warning:</strong> All data will be permanently deleted!
-            </Alert>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleDialogClose} disabled={demoLoading}>
-            Cancel
-          </Button>
-          <Button 
-            onClick={handleDialogConfirm} 
-            variant="contained"
-            color={dialogType === 'generate' ? 'success' : 'error'}
-            disabled={demoLoading}
-          >
-            {demoLoading ? <CircularProgress size={24} /> : 'Confirm'}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Box sx={{ mx: "auto", mt: 4, px: 4, width: "95%" }}>
-        <Typography
-          variant="h4"
-          sx={{ fontWeight: 700, letterSpacing: 1, mb: 3 }}
-        >
-          Dashboard
-        </Typography>
-
-        {/* Summary Stats */}
-        <Grid container spacing={2}>
-          {summaryStats.map(({ title, value, extra, icon, color }, i) => (
-            <Grid item xs={12} sm={6} md={3} key={i}>
-              <Card
-                sx={{
-                  p: 2,
-                  bgcolor: "#fff",
-                  boxShadow: 4,
-                  borderRadius: 3,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 2,
-                  minHeight: 100,
-                  transition: "box-shadow 0.2s",
-                  "&:hover": { boxShadow: 8 },
-                }}
-              >
-                <Avatar sx={iconStyle(color)}>{icon}</Avatar>
-                <Box>
-                  <Typography variant="subtitle2" color="text.secondary">
-                    {title}
-                  </Typography>
-                  <Typography variant="h6" fontWeight="bold">
-                    {value}
-                  </Typography>
-                  {extra && (
-                    <Typography variant="caption" color="text.secondary">
-                      {extra}
-                    </Typography>
-                  )}
-                </Box>
-              </Card>
-            </Grid>
-          ))}
+        {/* METRICS GRID */}
+        <Grid container spacing={2} sx={{ mb: 4 }}>
+          <Grid item xs={12} sm={6} md={3}>
+            <MetricCard
+              title="Total Clients"
+              value={metrics.totalClients}
+              icon={PeopleIcon}
+              loading={loading.metrics}
+              color={COLORS.primary}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <MetricCard
+              title="Total Vehicles"
+              value={metrics.totalVehicles}
+              icon={DirectionsCarIcon}
+              loading={loading.metrics}
+              color={COLORS.secondary}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <MetricCard
+              title="Total Trips"
+              value={metrics.totalTrips}
+              icon={TrendingUpIcon}
+              loading={loading.metrics}
+              color={COLORS.warning}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <MetricCard
+              title="Total Invoices"
+              value={metrics.totalInvoices}
+              icon={ReceiptIcon}
+              loading={loading.metrics}
+              color={COLORS.success}
+            />
+          </Grid>
         </Grid>
 
-        {/* Revenue Chart */}
-        <Paper
-          sx={{
-            mt: 4,
-            p: 3,
-            borderRadius: 3,
-            bgcolor: "#fff",
-            boxShadow: 3,
-            height: 320,
-          }}
-        >
-          <Typography variant="h6" fontWeight="bold" gutterBottom>
-            Revenue by Month
-          </Typography>
-          {revenueData.length > 0 ? (
-            <Box sx={{ height: "85%" }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={revenueData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" />
-                  <YAxis />
-                  <Tooltip />
-                  <Bar dataKey="revenue" fill="#1976d2" />
-                </BarChart>
-              </ResponsiveContainer>
-            </Box>
-          ) : (
-            <Typography textAlign="center" sx={{ py: 10, color: "gray" }}>
-              No revenue data to display
-            </Typography>
-          )}
-        </Paper>
+        <Grid container spacing={2} sx={{ mb: 4 }}>
+          <Grid item xs={12} sm={6} md={3}>
+            <MetricCard
+              title="Total Bills"
+              value={metrics.totalBills}
+              icon={AttachMoneyIcon}
+              loading={loading.metrics}
+              color={COLORS.primary}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <MetricCard
+              title="Total Revenue"
+              value={`₹${metrics.totalRevenue.toLocaleString()}`}
+              icon={AttachMoneyIcon}
+              loading={loading.metrics}
+              color={COLORS.success}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <MetricCard
+              title="Paid Amount"
+              value={`₹${metrics.totalPaid.toLocaleString()}`}
+              icon={CheckCircleIcon}
+              loading={loading.metrics}
+              color={COLORS.success}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <MetricCard
+              title="Pending Amount"
+              value={`₹${metrics.totalPending.toLocaleString()}`}
+              icon={ScheduleIcon}
+              loading={loading.metrics}
+              color={COLORS.warning}
+            />
+          </Grid>
+        </Grid>
 
-        {/* Recent Activity */}
-        <Paper
-          sx={{ borderRadius: 3, mt: 4, p: 2, bgcolor: "#fff", boxShadow: 2 }}
-        >
-          <Typography variant="h6" fontWeight="bold" sx={{ mb: 2 }}>
-            Recent Activity
-          </Typography>
-          {activities.length === 0 ? (
-            <Typography align="center" sx={{ color: "gray", py: 5 }}>
-              No recent activities
-            </Typography>
-          ) : (
-            <List>
-              {activities.map((item, idx) => (
-                <React.Fragment key={idx}>
-                  <ListItem>
-                    <ListItemIcon>
-                      <Avatar
-                        sx={{
-                          bgcolor: getActivityColor(item.type),
-                          width: 32,
-                          height: 32,
-                        }}
+        {/* ANALYTICS SECTION */}
+        <Typography variant="h6" sx={{ fontWeight: 600, mb: 2 }}>
+          Analytics
+        </Typography>
+
+        <Grid container spacing={2} sx={{ mb: 4 }}>
+          {/* INVOICE STATUS PIE CHART */}
+          <Grid item xs={12} md={6}>
+            <Card sx={{ boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
+              <CardContent>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
+                  <PieChartIcon sx={{ color: COLORS.primary }} />
+                  <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                    Invoice Status
+                  </Typography>
+                </Box>
+                <Divider sx={{ mb: 2 }} />
+
+                {loading.analytics ? (
+                  <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+                    <CircularProgress />
+                  </Box>
+                ) : analyticsData.invoiceStatus.length === 0 ? (
+                  <EmptyState message="No invoice data available" />
+                ) : (
+                  <ResponsiveContainer width="100%" height={300}>
+                    <PieChart>
+                      <Pie
+                        data={analyticsData.invoiceStatus}
+                        cx="50%"
+                        cy="50%"
+                        labelLine={false}
+                        label={({ name, value }) => `${name} (${value})`}
+                        outerRadius={80}
+                        fill="#8884d8"
+                        dataKey="value"
                       >
-                        {getActivityIcon(item.type)}
-                      </Avatar>
-                    </ListItemIcon>
-                    <ListItemText
-                      primary={
-                        <Typography fontWeight={500}>{item.text}</Typography>
-                      }
-                      secondary={item.time}
+                        <Cell fill={COLORS.success} />
+                        <Cell fill={COLORS.warning} />
+                        <Cell fill={COLORS.danger} />
+                      </Pie>
+                      <RechartsTooltip />
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
+              </CardContent>
+            </Card>
+          </Grid>
+
+          {/* TRIPS PER CLIENT BAR CHART */}
+          <Grid item xs={12} md={6}>
+            <Card sx={{ boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
+              <CardContent>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
+                  <TrendingUpIcon sx={{ color: COLORS.primary }} />
+                  <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                    Trips by Client
+                  </Typography>
+                </Box>
+                <Divider sx={{ mb: 2 }} />
+
+                {loading.analytics ? (
+                  <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+                    <CircularProgress />
+                  </Box>
+                ) : analyticsData.tripsPerClient.length === 0 ? (
+                  <EmptyState message="No trip data available" />
+                ) : (
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={analyticsData.tripsPerClient}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" angle={-45} textAnchor="end" height={60} interval={0} tick={{ fontSize: 12 }} />
+                      <YAxis />
+                      <RechartsTooltip />
+                      <Bar dataKey="trips" fill={COLORS.primary} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </CardContent>
+            </Card>
+          </Grid>
+        </Grid>
+
+        {/* RECENT ACTIVITY SECTION */}
+        <Typography variant="h6" sx={{ fontWeight: 600, mb: 2 }}>
+          Recent Activity
+        </Typography>
+
+        <Grid container spacing={2}>
+          <Grid item xs={12}>
+            <RecentActivityTable
+              title="Recent Trips"
+              data={recentTrips}
+              loading={loading.trips}
+              icon={TrendingUpIcon}
+              columns={[
+                { id: "trip_id", label: "Trip ID" },
+                {
+                  id: "client_name",
+                  label: "Client",
+                  render: (row) => row.client?.client_name || "-",
+                },
+                {
+                  id: "date",
+                  label: "Date",
+                  render: (row) => {
+                    try {
+                      return new Date(row.date).toLocaleDateString("en-IN");
+                    } catch {
+                      return "-";
+                    }
+                  },
+                },
+                {
+                  id: "amount",
+                  label: "Amount",
+                  render: (row) => `₹${(row.amount || 0).toLocaleString()}`,
+                },
+                {
+                  id: "status",
+                  label: "Status",
+                  render: (row) => (
+                    <Chip
+                      label={row.status || "Pending"}
+                      size="small"
+                      sx={{
+                        backgroundColor: STATUS_COLORS[row.status] || COLORS.neutral,
+                        color: "white",
+                      }}
                     />
-                  </ListItem>
-                  {idx < activities.length - 1 && <Divider />}
-                </React.Fragment>
-              ))}
-            </List>
-          )}
-        </Paper>
-      </Box>
+                  ),
+                },
+              ]}
+            />
+          </Grid>
+
+          <Grid item xs={12}>
+            <RecentActivityTable
+              title="Recent Invoices"
+              data={recentInvoices}
+              loading={loading.invoices}
+              icon={ReceiptIcon}
+              columns={[
+                { id: "invoice_number", label: "Invoice #" },
+                {
+                  id: "client_name",
+                  label: "Client",
+                  render: (row) => row.client_name || "-",
+                },
+                {
+                  id: "date",
+                  label: "Date",
+                  render: (row) => {
+                    try {
+                      return new Date(row.date).toLocaleDateString("en-IN");
+                    } catch {
+                      return "-";
+                    }
+                  },
+                },
+                {
+                  id: "total_amount",
+                  label: "Total",
+                  render: (row) => `₹${(row.total_amount || 0).toLocaleString()}`,
+                },
+                {
+                  id: "payment_status",
+                  label: "Status",
+                  render: (row) => (
+                    <Chip
+                      label={row.payment_status || "Unpaid"}
+                      size="small"
+                      sx={{
+                        backgroundColor: STATUS_COLORS[row.payment_status] || COLORS.neutral,
+                        color: "white",
+                      }}
+                    />
+                  ),
+                },
+              ]}
+            />
+          </Grid>
+
+          <Grid item xs={12}>
+            <RecentActivityTable
+              title="Recent Bills"
+              data={recentBills}
+              loading={loading.bills}
+              icon={AttachMoneyIcon}
+              columns={[
+                { id: "bill_number", label: "Bill #" },
+                {
+                  id: "client_name",
+                  label: "Client",
+                  render: (row) => row.client_name || "-",
+                },
+                {
+                  id: "bill_date",
+                  label: "Date",
+                  render: (row) => {
+                    try {
+                      return new Date(row.bill_date).toLocaleDateString("en-IN");
+                    } catch {
+                      return "-";
+                    }
+                  },
+                },
+                {
+                  id: "total_amount",
+                  label: "Total",
+                  render: (row) => `₹${(row.total_amount || 0).toLocaleString()}`,
+                },
+                {
+                  id: "payment_status",
+                  label: "Status",
+                  render: (row) => (
+                    <Chip
+                      label={row.payment_status || "Unpaid"}
+                      size="small"
+                      sx={{
+                        backgroundColor: STATUS_COLORS[row.payment_status] || COLORS.neutral,
+                        color: "white",
+                      }}
+                    />
+                  ),
+                },
+              ]}
+            />
+          </Grid>
+        </Grid>
+      </Container>
     </Box>
   );
 };

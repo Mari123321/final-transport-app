@@ -1,22 +1,5 @@
-/**
- * Smart Payments Page
- * 
- * CORE FEATURES:
- * - Client dropdown selection (required first)
- * - Bill Date dropdown auto-populates based on client
- * - NO manual date entry
- * - Apply Filter to fetch payments
- * - Partial payment with automatic balance calculation
- * - Transaction audit history
- * 
- * WORKFLOW:
- * 1. Select Client → Bill dates load automatically
- * 2. Select Bill Date (optional)
- * 3. Click Apply Filter → Payments display
- * 4. Add partial payment → Balance updates
- */
-
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import {
   Box,
   Typography,
@@ -36,1327 +19,768 @@ import {
   Button,
   TableContainer,
   Chip,
-  IconButton,
+  CircularProgress,
+  Alert,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
   TextField,
   Snackbar,
-  Alert,
-  CircularProgress,
-  Tooltip,
-  TablePagination,
   Divider,
-  List,
-  ListItem,
-  ListItemText,
-  ListItemIcon,
+  TablePagination,
+  IconButton,
+  Tooltip,
 } from "@mui/material";
 import {
-  Payment as PaymentIcon,
-  AccountBalance as AccountBalanceIcon,
-  TrendingUp as TrendingUpIcon,
-  TrendingDown as TrendingDownIcon,
-  FilterList as FilterListIcon,
   Add as AddIcon,
-  Visibility as ViewIcon,
-  AddCircle as AddPartialIcon,
-  Warning as WarningIcon,
+  Edit as EditIcon,
+  Delete as DeleteIcon,
   History as HistoryIcon,
-  CheckCircle as CheckCircleIcon,
-  Cancel as CancelIcon,
-  Search as SearchIcon,
-  Refresh as RefreshIcon,
 } from "@mui/icons-material";
-import {
-  getClientsForPayment,
-  getBillDatesForClient,
-  getFilteredPayments,
-  getFilteredPaymentSummary,
-  addPartialPayment,
-  getPaymentTransactions,
-} from "../api/smartPayments";
 
 const SmartPaymentsPage = () => {
-  // ============================================================
-  // STATE
-  // ============================================================
-  
-  // Dropdown data
-  const [clients, setClients] = useState([]);
-  const [billDates, setBillDates] = useState([]);
-  
-  // Loading states
-  const [clientsLoading, setClientsLoading] = useState(false);
-  const [datesLoading, setDatesLoading] = useState(false);
-  const [paymentsLoading, setPaymentsLoading] = useState(false);
-  
-  // Filter state (ONLY client, date, status, mode - NO manual date entry)
-  const [selectedClient, setSelectedClient] = useState("");
-  const [selectedBillDate, setSelectedBillDate] = useState("");
-  const [selectedStatus, setSelectedStatus] = useState("");
-  const [selectedMode, setSelectedMode] = useState("");
-  
-  // Applied filters (what's currently showing)
-  const [appliedFilters, setAppliedFilters] = useState({
-    clientId: "",
-    billDate: "",
-    status: "",
-    paymentMode: "",
-  });
-  
-  // Results
-  const [payments, setPayments] = useState([]);
-  const [summary, setSummary] = useState({
-    count: 0,
-    totalBilled: 0,
-    totalReceived: 0,
-    totalPending: 0,
-    collectionRate: 0,
-    overdueCount: 0,
-    overdueAmount: 0,
-  });
-  
-  // Pagination
-  const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(25);
-  const [totalCount, setTotalCount] = useState(0);
-  
-  // Dialogs
-  const [partialDialogOpen, setPartialDialogOpen] = useState(false);
-  const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
-  const [viewDialogOpen, setViewDialogOpen] = useState(false);
-  const [selectedPayment, setSelectedPayment] = useState(null);
-  const [transactions, setTransactions] = useState([]);
-  
-  // Partial payment form
-  const [partialAmount, setPartialAmount] = useState("");
-  const [partialMode, setPartialMode] = useState("Cash");
-  const [partialReference, setPartialReference] = useState("");
-  const [partialRemarks, setPartialRemarks] = useState("");
-  const [partialLoading, setPartialLoading] = useState(false);
-  
-  // Notification
-  const [notification, setNotification] = useState({
-    open: false,
-    message: "",
-    severity: "info",
-  });
+  const location = useLocation();
+  const newInvoiceFromRoute = location.state?.newInvoice;
+  const autoSelectInvoiceId = location.state?.autoSelectInvoice;
 
-  // ============================================================
-  // EFFECTS
-  // ============================================================
-  
-  // Load clients on mount
+  // Payment Mode Configuration - ENUM values and display labels
+  const PAYMENT_MODES = [
+    { value: 'CASH', label: 'Cash' },
+    { value: 'CHEQUE', label: 'Cheque' },
+    { value: 'BANK', label: 'Bank Transfer' },
+    { value: 'UPI', label: 'UPI' },
+  ];
+
+  // State for clients and invoices
+  const [clients, setClients] = useState([]);
+  const [clientInvoices, setClientInvoices] = useState({}); // Grouped by client
+  const [selectedClient, setSelectedClient] = useState("");
+  const [selectedInvoiceDate, setSelectedInvoiceDate] = useState("");
+  const [selectedInvoiceData, setSelectedInvoiceData] = useState([]);
+
+  // State for payment
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentMode, setPaymentMode] = useState("CASH"); // UPPERCASE ENUM
+  const [paymentNotes, setPaymentNotes] = useState("");
+
+  // State for UI
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  const [selectedPaymentItem, setSelectedPaymentItem] = useState(null);
+  const [transactionHistory, setTransactionHistory] = useState([]);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+
+  // Fetch clients and their invoices on mount
   useEffect(() => {
-    loadClients();
+    fetchClientsWithInvoices();
+
+    // Auto-select newly created invoice if available
+    if (newInvoiceFromRoute && autoSelectInvoiceId) {
+      setSelectedClient(newInvoiceFromRoute.clientId);
+      setSelectedInvoiceDate(newInvoiceFromRoute.date);
+      fetchInvoiceDetails(newInvoiceFromRoute.clientId, newInvoiceFromRoute.date);
+    }
   }, []);
 
-  // Load bill dates when client changes
-  useEffect(() => {
-    if (selectedClient) {
-      loadBillDates(selectedClient);
-    } else {
-      setBillDates([]);
-      setSelectedBillDate("");
-    }
-  }, [selectedClient]);
-
-  // ============================================================
-  // DATA LOADING
-  // ============================================================
-  
-  const loadClients = async () => {
-    setClientsLoading(true);
+  const fetchClientsWithInvoices = async () => {
     try {
-      const response = await getClientsForPayment();
-      if (response.success) {
-        setClients(response.data || []);
-      } else {
-        showNotification("Failed to load clients", "error");
-      }
-    } catch (error) {
-      console.error("Error loading clients:", error);
-      showNotification(error.response?.data?.error || "Failed to load clients", "error");
-    } finally {
-      setClientsLoading(false);
-    }
-  };
+      setLoading(true);
+      setError("");
 
-  const loadBillDates = async (clientId) => {
-    setDatesLoading(true);
-    setSelectedBillDate(""); // Reset date when client changes
-    try {
-      console.log("🔍 Fetching bill dates for client:", clientId);
-      const response = await getBillDatesForClient(clientId);
-      console.log("📅 Bill dates response:", response);
-      
-      if (response.success) {
-        const dates = response.data || [];
-        console.log(`✅ Loaded ${dates.length} bill dates:`, dates);
-        setBillDates(dates);
-        
-        if (dates.length === 0) {
-          showNotification("No invoices found for this client", "info");
+      // Fetch all invoices (filter to show only those created from Invoice page)
+      const res = await fetch("http://localhost:5000/api/invoices");
+      const invoices = await res.json();
+
+      // Group invoices by client
+      const grouped = {};
+      invoices.forEach((invoice) => {
+        if (!grouped[invoice.client_id]) {
+          grouped[invoice.client_id] = {
+            client_id: invoice.client_id,
+            client_name: invoice.client_name,
+            dates: [],
+          };
         }
-      } else {
-        console.warn("❌ Bill dates fetch failed:", response);
-        setBillDates([]);
-        showNotification(response.error || "Failed to load bill dates", "error");
-      }
-    } catch (error) {
-      console.error("💥 Error loading bill dates:", error);
-      console.error("Error details:", error.response?.data);
-      setBillDates([]);
-      showNotification(
-        error.response?.data?.error || "Failed to load bill dates", 
-        "error"
-      );
-    } finally {
-      setDatesLoading(false);
-    }
-  };
 
-  const loadPayments = async (filters) => {
-    setPaymentsLoading(true);
-    try {
-      const [paymentsRes, summaryRes] = await Promise.all([
-        getFilteredPayments({
-          ...filters,
-          page: page + 1,
-          limit: rowsPerPage,
-        }),
-        getFilteredPaymentSummary(filters),
-      ]);
-
-      if (paymentsRes.success) {
-        setPayments(paymentsRes.data || []);
-        setTotalCount(paymentsRes.pagination?.total || 0);
-      } else {
-        setPayments([]);
-        setTotalCount(0);
-      }
-
-      if (summaryRes.success) {
-        setSummary(summaryRes.data);
-      }
-    } catch (error) {
-      console.error("Error loading payments:", error);
-      showNotification(error.response?.data?.error || "Failed to load payments", "error");
-      setPayments([]);
-    } finally {
-      setPaymentsLoading(false);
-    }
-  };
-
-  const loadTransactions = async (paymentId) => {
-    try {
-      const response = await getPaymentTransactions(paymentId);
-      if (response.success) {
-        setTransactions(response.data || []);
-      }
-    } catch (error) {
-      console.error("Error loading transactions:", error);
-      setTransactions([]);
-    }
-  };
-
-  // ============================================================
-  // HANDLERS
-  // ============================================================
-  
-  const handleApplyFilter = () => {
-    if (!selectedClient) {
-      showNotification("Please select a client first", "warning");
-      return;
-    }
-
-    const filters = {
-      clientId: selectedClient,
-      billDate: selectedBillDate,
-      status: selectedStatus,
-      paymentMode: selectedMode,
-    };
-
-    setAppliedFilters(filters);
-    setPage(0);
-    loadPayments(filters);
-  };
-
-  const handleClearFilters = () => {
-    setSelectedClient("");
-    setSelectedBillDate("");
-    setSelectedStatus("");
-    setSelectedMode("");
-    setBillDates([]);
-    setAppliedFilters({
-      clientId: "",
-      billDate: "",
-      status: "",
-      paymentMode: "",
-    });
-    setPayments([]);
-    setSummary({
-      count: 0,
-      totalBilled: 0,
-      totalReceived: 0,
-      totalPending: 0,
-      collectionRate: 0,
-      overdueCount: 0,
-      overdueAmount: 0,
-    });
-    setTotalCount(0);
-  };
-
-  const handleRefresh = () => {
-    if (appliedFilters.clientId) {
-      loadPayments(appliedFilters);
-    }
-  };
-
-  const handleOpenPartialDialog = (payment) => {
-    setSelectedPayment(payment);
-    setPartialAmount("");
-    setPartialMode(payment.paymentMode || "Cash");
-    setPartialReference("");
-    setPartialRemarks("");
-    setPartialDialogOpen(true);
-  };
-
-  const handleAddPartialPayment = async () => {
-    if (!partialAmount || Number(partialAmount) <= 0) {
-      showNotification("Please enter a valid amount", "error");
-      return;
-    }
-
-    if (Number(partialAmount) > selectedPayment.balanceAmount) {
-      showNotification(
-        `Amount cannot exceed pending balance of ₹${selectedPayment.balanceAmount.toLocaleString()}`,
-        "error"
-      );
-      return;
-    }
-
-    setPartialLoading(true);
-    try {
-      const response = await addPartialPayment(selectedPayment.paymentId, {
-        amount: Number(partialAmount),
-        paymentMode: partialMode,
-        referenceNo: partialReference,
-        remarks: partialRemarks,
+        // Add unique dates
+        if (!grouped[invoice.client_id].dates.includes(invoice.date)) {
+          grouped[invoice.client_id].dates.push(invoice.date);
+        }
       });
 
-      if (response.success) {
-        showNotification(response.message || "Payment recorded successfully", "success");
-        setPartialDialogOpen(false);
-        // Refresh the payments list
-        loadPayments(appliedFilters);
-      } else {
-        showNotification(response.error || "Failed to record payment", "error");
-      }
-    } catch (error) {
-      console.error("Error adding partial payment:", error);
-      showNotification(
-        error.response?.data?.error || "Failed to record payment",
-        "error"
-      );
+      setClientInvoices(grouped);
+
+      // Extract unique clients
+      const clientList = Object.values(grouped);
+      setClients(clientList);
+    } catch (err) {
+      console.error("Failed to fetch invoices:", err);
+      setError("Failed to load invoices. Please refresh the page.");
     } finally {
-      setPartialLoading(false);
+      setLoading(false);
     }
   };
 
-  const handleViewHistory = async (payment) => {
-    setSelectedPayment(payment);
-    await loadTransactions(payment.paymentId);
-    setHistoryDialogOpen(true);
+  const fetchInvoiceDetails = async (clientId, date) => {
+    try {
+      setLoading(true);
+      setError("");
+      setSelectedInvoiceData([]);
+
+      // Fetch invoices for specific client and date
+      const res = await fetch(
+        `http://localhost:5000/api/invoices?clientId=${clientId}&date=${date}`
+      );
+
+      if (!res.ok) {
+        throw new Error("Failed to fetch invoice details");
+      }
+
+      const invoices = await res.json();
+
+      // If we have invoices, fetch their trip details
+      if (invoices && invoices.length > 0) {
+        // For now, we'll fetch trips from create-preview to show trip-level details
+        // This matches the existing workflow
+        const previewRes = await fetch(
+          `http://localhost:5000/api/invoices/create-preview?clientId=${clientId}&date=${date}`
+        );
+        
+        if (previewRes.ok) {
+          const tripData = await previewRes.json();
+          // Add invoice_id to each trip if available
+          const tripsWithInvoice = tripData.map(trip => ({
+            ...trip,
+            invoice_id: invoices[0]?.invoice_id // Use the first invoice's ID
+          }));
+          setSelectedInvoiceData(tripsWithInvoice);
+        } else {
+          setSelectedInvoiceData([]);
+        }
+      } else {
+        setSelectedInvoiceData([]);
+      }
+    } catch (err) {
+      console.error("Failed to fetch invoice details:", err);
+      setError("Failed to load invoice details. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleViewDetails = (payment) => {
-    setSelectedPayment(payment);
-    setViewDialogOpen(true);
+  const handleClientChange = (e) => {
+    const clientId = e.target.value;
+    setSelectedClient(clientId);
+    setSelectedInvoiceDate("");
+    setSelectedInvoiceData([]);
+  };
+
+  const handleInvoiceDateChange = (e) => {
+    const date = e.target.value;
+    setSelectedInvoiceDate(date);
+    if (selectedClient && date) {
+      fetchInvoiceDetails(selectedClient, date);
+    }
+  };
+
+  const handlePaymentClick = (item) => {
+    setSelectedPaymentItem(item);
+    setPaymentAmount("");
+    setPaymentMode("CASH"); // Use UPPERCASE ENUM value
+    setPaymentNotes("");
+    setError(""); // Clear any previous errors
+    setPaymentDialogOpen(true);
+  };
+
+  const handlePaymentSubmit = async () => {
+    // Clear previous errors
+    setError("");
+
+    // Validation: Amount is required
+    if (!paymentAmount || paymentAmount.trim() === "") {
+      setError("Payment amount is required");
+      return;
+    }
+
+    // Validation: Convert and check if valid number
+    const amount = Number(paymentAmount);
+    if (isNaN(amount)) {
+      setError("Payment amount must be a valid number");
+      return;
+    }
+
+    // Validation: Amount must be greater than 0
+    if (amount <= 0) {
+      setError("Payment amount must be greater than 0");
+      return;
+    }
+
+    // Validation: Amount cannot exceed pending balance
+    const totalPending = Number(selectedPaymentItem?.pending_amount || 0);
+    // Round both values to 2 decimal places to avoid floating-point precision issues
+    const roundedAmount = Math.round(amount * 100) / 100;
+    const roundedPending = Math.round(totalPending * 100) / 100;
+    
+    if (roundedAmount > roundedPending) {
+      setError(`Payment amount cannot exceed pending balance of ₹${totalPending.toLocaleString("en-IN")}`);
+      return;
+    }
+
+    // Validation: Payment mode is required
+    if (!paymentMode || paymentMode.trim() === "") {
+      setError("Please select a payment mode");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+
+      // Prepare payment data for backend - TRIP PAYMENT
+      const paymentData = {
+        trip_id: selectedPaymentItem.trip_id || selectedPaymentItem.id,
+        client_id: parseInt(selectedClient),
+        amount: Number(amount), // Must be a number
+        payment_mode: paymentMode, // Already in UPPERCASE ENUM format (CASH, BANK, etc.)
+        payment_date: new Date().toISOString().split('T')[0], // YYYY-MM-DD format
+        remarks: paymentNotes || `Payment for trip #${selectedPaymentItem.trip_id || selectedPaymentItem.id}`,
+      };
+
+      console.log('Submitting payment:', paymentData);
+
+      // Submit payment to backend - Use trip payment endpoint
+      const res = await fetch("http://localhost:5000/api/smart-payments/trip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(paymentData),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        console.error("Payment error response:", errData);
+        
+        // Show detailed validation errors if available
+        if (errData.validationErrors) {
+          const errorDetails = errData.validationErrors
+            .map(e => `${e.field}: ${e.message}`)
+            .join('\n');
+          throw new Error(errorDetails || errData.error);
+        }
+        
+        const errorMsg = errData.detail || errData.error || "Failed to process payment";
+        throw new Error(errorMsg);
+      }
+
+      const responseData = await res.json();
+      console.log("Payment recorded successfully:", responseData);
+
+      // Update local state using response data
+      const updatedInvoiceData = selectedInvoiceData.map((item) => {
+        if ((item.trip_id || item.id) === (selectedPaymentItem.trip_id || selectedPaymentItem.id)) {
+          // Use values from backend response for accuracy
+          return {
+            ...item,
+            amount_paid: responseData.data?.paid_amount || (Number(item.amount_paid || 0) + amount),
+            pending_amount: responseData.data?.pending_amount || Math.max(0, Number(item.amount || item.total_amount || 0) - (Number(item.amount_paid || 0) + amount)),
+          };
+        }
+        return item;
+      });
+
+      setSelectedInvoiceData(updatedInvoiceData);
+
+      // Show success message with details
+      const statusMsg = responseData.data?.payment_status 
+        ? ` (Status: ${responseData.data.payment_status})` 
+        : '';
+      setSuccess(`Payment of ₹${amount.toLocaleString("en-IN")} recorded successfully!${statusMsg}`);
+      
+      // Close dialog
+      setPaymentDialogOpen(false);
+
+      // Reset form fields
+      setPaymentAmount("");
+      setPaymentMode("CASH"); // Reset to UPPERCASE ENUM
+      setPaymentNotes("");
+      setSelectedPaymentItem(null);
+
+      // Add to transaction history
+      const newTransaction = {
+        id: Date.now(),
+        tripId: selectedPaymentItem.trip_id || selectedPaymentItem.id,
+        invoiceId: selectedPaymentItem.invoice_id,
+        amount: amount,
+        mode: paymentMode,
+        date: new Date().toLocaleDateString("en-IN"),
+        notes: paymentNotes,
+      };
+      setTransactionHistory([newTransaction, ...transactionHistory]);
+
+      // Optional: Refresh data from server after a short delay
+      setTimeout(() => {
+        if (selectedClient && selectedInvoiceDate) {
+          fetchInvoiceDetails(selectedClient, selectedInvoiceDate);
+        }
+      }, 1000);
+
+    } catch (err) {
+      console.error("Failed to submit payment:", err);
+      setError(err.message || "Failed to process payment. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleChangePage = (event, newPage) => {
     setPage(newPage);
-    if (appliedFilters.clientId) {
-      loadPayments({ ...appliedFilters, page: newPage + 1, limit: rowsPerPage });
-    }
   };
 
   const handleChangeRowsPerPage = (event) => {
-    const newLimit = parseInt(event.target.value, 10);
-    setRowsPerPage(newLimit);
+    setRowsPerPage(parseInt(event.target.value, 10));
     setPage(0);
-    if (appliedFilters.clientId) {
-      loadPayments({ ...appliedFilters, page: 1, limit: newLimit });
-    }
   };
 
-  // ============================================================
-  // HELPERS
-  // ============================================================
-  
-  const showNotification = (message, severity = "info") => {
-    setNotification({ open: true, message, severity });
-  };
+  const paginatedData = selectedInvoiceData.slice(
+    page * rowsPerPage,
+    page * rowsPerPage + rowsPerPage
+  );
 
-  const getStatusColor = (status) => {
-    switch (status?.toLowerCase()) {
-      case "paid":
-        return "success";
-      case "partial":
-        return "warning";
-      case "pending":
-        return "error";
-      case "overdue":
-        return "error";
-      default:
-        return "default";
-    }
-  };
-
+  // Format currency
   const formatCurrency = (amount) => {
     return `₹${(Number(amount) || 0).toLocaleString("en-IN")}`;
   };
 
+  // Format date
   const formatDate = (dateStr) => {
     if (!dateStr) return "-";
-    return new Date(dateStr).toLocaleDateString("en-IN", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-    });
+    return new Date(dateStr).toLocaleDateString("en-IN");
   };
 
-  const getClientName = (clientId) => {
-    const client = clients.find((c) => c.id === Number(clientId));
-    return client?.name || "";
+  // Calculate totals for selected invoice
+  const calculateTotals = () => {
+    return {
+      totalAmount: selectedInvoiceData.reduce((sum, item) => sum + (Number(item.total_amount) || 0), 0),
+      paidAmount: selectedInvoiceData.reduce((sum, item) => sum + (Number(item.amount_paid) || 0), 0),
+      pendingAmount: selectedInvoiceData.reduce((sum, item) => sum + (Number(item.pending_amount) || 0), 0),
+    };
   };
 
-  // ============================================================
-  // RENDER
-  // ============================================================
-  
+  const totals = calculateTotals();
+
   return (
-    <Box sx={{ p: { xs: 1, sm: 2, md: 3 }, backgroundColor: "#f5f7fa", minHeight: "100vh" }}>
-      {/* Page Header */}
-      <Box
-        sx={{
-          display: "flex",
-          flexDirection: { xs: "column", sm: "row" },
-          alignItems: { xs: "flex-start", sm: "center" },
-          justifyContent: "space-between",
-          mb: 3,
-          gap: 2,
-        }}
-      >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-          <PaymentIcon sx={{ fontSize: { xs: 28, sm: 36 }, color: "#1976d2" }} />
-          <Box>
-            <Typography
-              variant="h4"
-              sx={{
-                fontWeight: 700,
-                color: "#1e293b",
-                fontSize: { xs: "1.25rem", sm: "1.5rem", md: "2rem" },
-              }}
-            >
-              Smart Payment Management
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Select client → Choose date → View & manage payments
-            </Typography>
-          </Box>
-        </Box>
-        <Button
-          variant="outlined"
-          startIcon={<RefreshIcon />}
-          onClick={handleRefresh}
-          disabled={!appliedFilters.clientId || paymentsLoading}
-          sx={{ textTransform: "none" }}
-        >
-          Refresh
-        </Button>
+    <Box sx={{ p: { xs: 2, sm: 3 } }}>
+      {/* Header */}
+      <Box sx={{ mb: 3 }}>
+        <Typography variant="h4" sx={{ fontWeight: 700, color: "#1e293b", mb: 0.5 }}>
+          Smart Payments
+        </Typography>
+        <Typography variant="body2" sx={{ color: "#64748b" }}>
+          Manage invoice payments and track collections
+        </Typography>
       </Box>
 
-      {/* Filter Section - CRITICAL: Client first, then dates auto-load */}
+      {/* Alerts */}
+      {error && (
+        <Alert severity="error" onClose={() => setError("")} sx={{ mb: 3 }}>
+          {error}
+        </Alert>
+      )}
+      {success && (
+        <Snackbar
+          open={!!success}
+          autoHideDuration={4000}
+          onClose={() => setSuccess("")}
+          message={success}
+        />
+      )}
+      {newInvoiceFromRoute && (
+        <Alert severity="success" sx={{ mb: 3 }}>
+          ✅ Invoice created successfully! Client: <strong>{newInvoiceFromRoute.clientName}</strong> | Date:{" "}
+          <strong>{formatDate(newInvoiceFromRoute.date)}</strong> | Amount:{" "}
+          <strong>{formatCurrency(newInvoiceFromRoute.totalAmount)}</strong>
+        </Alert>
+      )}
+
+      {/* Client & Invoice Selection */}
       <Paper
         sx={{
-          p: { xs: 2, sm: 3 },
+          p: 3,
           mb: 3,
           borderRadius: 2,
           boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
           border: "2px solid #e2e8f0",
         }}
       >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 2, mb: 2 }}>
-          <FilterListIcon sx={{ color: "#1976d2" }} />
-          <Typography variant="h6" sx={{ fontWeight: 600, color: "#334155" }}>
-            Filter Payments
-          </Typography>
-          <Chip
-            label="Select client first to load dates"
-            size="small"
-            color="info"
-            variant="outlined"
-          />
-        </Box>
+        <Typography variant="h6" sx={{ mb: 2, fontWeight: 600, color: "#334155" }}>
+          Select Invoice
+        </Typography>
 
         <Grid container spacing={2} alignItems="flex-end">
-          {/* Client Dropdown - REQUIRED FIRST */}
-          <Grid item xs={12} sm={6} md={3}>
-            <FormControl fullWidth size="small">
-              <InputLabel>Client *</InputLabel>
+          <Grid item xs={12} sm={6} md={4}>
+            <FormControl fullWidth size="small" disabled={loading}>
+              <InputLabel>Client</InputLabel>
               <Select
                 value={selectedClient}
-                label="Client *"
-                onChange={(e) => setSelectedClient(e.target.value)}
-                disabled={clientsLoading}
+                label="Client"
+                onChange={handleClientChange}
               >
-                <MenuItem value="">
-                  <em>Select a client</em>
-                </MenuItem>
+                <MenuItem value="">-- Select Client --</MenuItem>
                 {clients.map((client) => (
-                  <MenuItem key={client.id} value={client.id}>
-                    {client.name}
+                  <MenuItem key={client.client_id} value={client.client_id}>
+                    {client.client_name}
                   </MenuItem>
                 ))}
               </Select>
             </FormControl>
           </Grid>
 
-          {/* Bill Date Dropdown - AUTO-POPULATED, disabled until client selected */}
-          <Grid item xs={12} sm={6} md={3}>
-            <FormControl fullWidth size="small" disabled={!selectedClient || datesLoading}>
-              <InputLabel>Bill Date</InputLabel>
+          <Grid item xs={12} sm={6} md={4}>
+            <FormControl fullWidth size="small" disabled={!selectedClient || loading}>
+              <InputLabel>Invoice Date</InputLabel>
               <Select
-                value={selectedBillDate}
-                label="Bill Date"
-                onChange={(e) => setSelectedBillDate(e.target.value)}
+                value={selectedInvoiceDate}
+                label="Invoice Date"
+                onChange={handleInvoiceDateChange}
               >
-                <MenuItem value="">
-                  <em>
-                    {!selectedClient
-                      ? "Select client first"
-                      : datesLoading
-                      ? "Loading dates..."
-                      : billDates.length === 0
-                      ? "No dates available"
-                      : "All dates"}
-                  </em>
-                </MenuItem>
-                {billDates.map((date) => (
-                  <MenuItem key={date.iso} value={date.iso}>
-                    {date.display}
-                  </MenuItem>
-                ))}
+                <MenuItem value="">-- Select Date --</MenuItem>
+                {selectedClient &&
+                  clientInvoices[selectedClient]?.dates.map((date) => (
+                    <MenuItem key={date} value={date}>
+                      {formatDate(date)}
+                    </MenuItem>
+                  ))}
               </Select>
             </FormControl>
           </Grid>
 
-          {/* Status Filter */}
-          <Grid item xs={12} sm={6} md={2}>
-            <FormControl fullWidth size="small">
-              <InputLabel>Status</InputLabel>
-              <Select
-                value={selectedStatus}
-                label="Status"
-                onChange={(e) => setSelectedStatus(e.target.value)}
-              >
-                <MenuItem value="">All Status</MenuItem>
-                <MenuItem value="Paid">Paid</MenuItem>
-                <MenuItem value="Partial">Partial</MenuItem>
-                <MenuItem value="Pending">Pending</MenuItem>
-              </Select>
-            </FormControl>
-          </Grid>
-
-          {/* Payment Mode Filter */}
-          <Grid item xs={12} sm={6} md={2}>
-            <FormControl fullWidth size="small">
-              <InputLabel>Mode</InputLabel>
-              <Select
-                value={selectedMode}
-                label="Mode"
-                onChange={(e) => setSelectedMode(e.target.value)}
-              >
-                <MenuItem value="">All Modes</MenuItem>
-                <MenuItem value="Cash">Cash</MenuItem>
-                <MenuItem value="Bank">Bank</MenuItem>
-                <MenuItem value="UPI">UPI</MenuItem>
-                <MenuItem value="Cheque">Cheque</MenuItem>
-              </Select>
-            </FormControl>
-          </Grid>
-
-          {/* Action Buttons */}
-          <Grid item xs={12} sm={12} md={2}>
-            <Box sx={{ display: "flex", gap: 1 }}>
+          <Grid item xs={12} sm={6} md={4}>
+            <Tooltip title="Reload invoice data">
               <Button
                 fullWidth
-                variant="contained"
-                startIcon={<SearchIcon />}
-                onClick={handleApplyFilter}
-                disabled={!selectedClient || paymentsLoading}
-                sx={{
-                  background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-                  textTransform: "none",
-                  fontWeight: 600,
-                }}
-              >
-                Apply
-              </Button>
-              <Button
                 variant="outlined"
-                onClick={handleClearFilters}
-                sx={{ textTransform: "none", minWidth: "auto", px: 2 }}
+                onClick={() => {
+                  if (selectedClient && selectedInvoiceDate) {
+                    fetchInvoiceDetails(selectedClient, selectedInvoiceDate);
+                  }
+                }}
+                disabled={!selectedClient || !selectedInvoiceDate || loading}
               >
-                Clear
+                Refresh
               </Button>
-            </Box>
+            </Tooltip>
           </Grid>
         </Grid>
-
-        {/* Applied Filters Display */}
-        {appliedFilters.clientId && (
-          <Box sx={{ mt: 2, display: "flex", gap: 1, flexWrap: "wrap" }}>
-            <Chip
-              label={`Client: ${getClientName(appliedFilters.clientId)}`}
-              size="small"
-              color="primary"
-            />
-            {appliedFilters.billDate && (
-              <Chip
-                label={`Date: ${formatDate(appliedFilters.billDate)}`}
-                size="small"
-                color="secondary"
-              />
-            )}
-            {appliedFilters.status && (
-              <Chip label={`Status: ${appliedFilters.status}`} size="small" />
-            )}
-            {appliedFilters.paymentMode && (
-              <Chip label={`Mode: ${appliedFilters.paymentMode}`} size="small" />
-            )}
-          </Box>
-        )}
       </Paper>
 
-      {/* Summary Cards - Only show when filters applied */}
-      {appliedFilters.clientId && (
-        <Grid container spacing={2} sx={{ mb: 3 }}>
-          <Grid item xs={6} sm={6} md={2.4}>
-            <Card
-              sx={{
-                background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-                color: "white",
-                boxShadow: "0 4px 20px rgba(102, 126, 234, 0.4)",
-              }}
-            >
-              <CardContent sx={{ p: { xs: 1.5, sm: 2 } }}>
-                <Typography variant="body2" sx={{ opacity: 0.9, mb: 0.5 }}>
-                  Total Billed
-                </Typography>
-                <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                  {formatCurrency(summary.totalBilled)}
-                </Typography>
-                <Typography variant="caption" sx={{ opacity: 0.8 }}>
-                  {summary.count} records
-                </Typography>
-              </CardContent>
-            </Card>
+      {/* Invoice Summary */}
+      {selectedInvoiceData.length > 0 && (
+        <Box>
+          {/* Summary Cards */}
+          <Grid container spacing={2} sx={{ mb: 3 }}>
+            <Grid item xs={6} sm={3} md={3}>
+              <Card
+                sx={{
+                  background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+                  color: "white",
+                  boxShadow: "0 4px 20px rgba(102, 126, 234, 0.4)",
+                }}
+              >
+                <CardContent sx={{ p: { xs: 1.5, sm: 2 } }}>
+                  <Typography variant="body2" sx={{ opacity: 0.9, mb: 0.5 }}>
+                    Total Amount
+                  </Typography>
+                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                    {formatCurrency(totals.totalAmount)}
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+
+            <Grid item xs={6} sm={3} md={3}>
+              <Card
+                sx={{
+                  background: "linear-gradient(135deg, #11998e 0%, #38ef7d 100%)",
+                  color: "white",
+                  boxShadow: "0 4px 20px rgba(56, 239, 125, 0.4)",
+                }}
+              >
+                <CardContent sx={{ p: { xs: 1.5, sm: 2 } }}>
+                  <Typography variant="body2" sx={{ opacity: 0.9, mb: 0.5 }}>
+                    Amount Paid
+                  </Typography>
+                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                    {formatCurrency(totals.paidAmount)}
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+
+            <Grid item xs={6} sm={3} md={3}>
+              <Card
+                sx={{
+                  background: "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)",
+                  color: "white",
+                  boxShadow: "0 4px 20px rgba(240, 147, 251, 0.4)",
+                }}
+              >
+                <CardContent sx={{ p: { xs: 1.5, sm: 2 } }}>
+                  <Typography variant="body2" sx={{ opacity: 0.9, mb: 0.5 }}>
+                    Pending Amount
+                  </Typography>
+                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                    {formatCurrency(totals.pendingAmount)}
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+
+            <Grid item xs={6} sm={3} md={3}>
+              <Card
+                sx={{
+                  background: "linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)",
+                  color: "white",
+                  boxShadow: "0 4px 20px rgba(79, 172, 254, 0.4)",
+                }}
+              >
+                <CardContent sx={{ p: { xs: 1.5, sm: 2 } }}>
+                  <Typography variant="body2" sx={{ opacity: 0.9, mb: 0.5 }}>
+                    Collection %
+                  </Typography>
+                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                    {totals.totalAmount > 0
+                      ? `${((totals.paidAmount / totals.totalAmount) * 100).toFixed(1)}%`
+                      : "0%"}
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
           </Grid>
 
-          <Grid item xs={6} sm={6} md={2.4}>
-            <Card
-              sx={{
-                background: "linear-gradient(135deg, #11998e 0%, #38ef7d 100%)",
-                color: "white",
-                boxShadow: "0 4px 20px rgba(56, 239, 125, 0.4)",
-              }}
-            >
-              <CardContent sx={{ p: { xs: 1.5, sm: 2 } }}>
-                <Typography variant="body2" sx={{ opacity: 0.9, mb: 0.5 }}>
-                  Total Received
-                </Typography>
-                <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                  {formatCurrency(summary.totalReceived)}
-                </Typography>
-                <Typography variant="caption" sx={{ opacity: 0.8 }}>
-                  Collected
-                </Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-
-          <Grid item xs={6} sm={6} md={2.4}>
-            <Card
-              sx={{
-                background: "linear-gradient(135deg, #f093fb 0%, #f5576c 100%)",
-                color: "white",
-                boxShadow: "0 4px 20px rgba(240, 147, 251, 0.4)",
-              }}
-            >
-              <CardContent sx={{ p: { xs: 1.5, sm: 2 } }}>
-                <Typography variant="body2" sx={{ opacity: 0.9, mb: 0.5 }}>
-                  Total Pending
-                </Typography>
-                <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                  {formatCurrency(summary.totalPending)}
-                </Typography>
-                <Typography variant="caption" sx={{ opacity: 0.8 }}>
-                  Outstanding
-                </Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-
-          <Grid item xs={6} sm={6} md={2.4}>
-            <Card
-              sx={{
-                background: "linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)",
-                color: "white",
-                boxShadow: "0 4px 20px rgba(79, 172, 254, 0.4)",
-              }}
-            >
-              <CardContent sx={{ p: { xs: 1.5, sm: 2 } }}>
-                <Typography variant="body2" sx={{ opacity: 0.9, mb: 0.5 }}>
-                  Collection Rate
-                </Typography>
-                <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                  {summary.collectionRate}%
-                </Typography>
-                <Typography variant="caption" sx={{ opacity: 0.8 }}>
-                  Efficiency
-                </Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-
-          <Grid item xs={12} sm={6} md={2.4}>
-            <Card
-              sx={{
-                background:
-                  summary.overdueAmount > 0
-                    ? "linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%)"
-                    : "linear-gradient(135deg, #a8edea 0%, #fed6e3 100%)",
-                color: summary.overdueAmount > 0 ? "white" : "#334155",
-                boxShadow: "0 4px 20px rgba(255, 65, 108, 0.3)",
-              }}
-            >
-              <CardContent sx={{ p: { xs: 1.5, sm: 2 } }}>
-                <Typography variant="body2" sx={{ opacity: 0.9, mb: 0.5 }}>
-                  Overdue
-                </Typography>
-                <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                  {formatCurrency(summary.overdueAmount)}
-                </Typography>
-                <Typography variant="caption" sx={{ opacity: 0.8 }}>
-                  {summary.overdueCount} overdue
-                </Typography>
-              </CardContent>
-            </Card>
-          </Grid>
-        </Grid>
-      )}
-
-      {/* Payments Table */}
-      <Paper
-        sx={{
-          borderRadius: 2,
-          boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
-          overflow: "hidden",
-        }}
-      >
-        <TableContainer>
-          <Table>
-            <TableHead>
-              <TableRow sx={{ backgroundColor: "#f8fafc" }}>
-                <TableCell sx={{ fontWeight: 600 }}>Client</TableCell>
-                <TableCell sx={{ fontWeight: 600 }}>Invoice #</TableCell>
-                <TableCell sx={{ fontWeight: 600 }}>Bill Date</TableCell>
-                <TableCell sx={{ fontWeight: 600, textAlign: "right" }}>Total</TableCell>
-                <TableCell sx={{ fontWeight: 600, textAlign: "right" }}>Paid</TableCell>
-                <TableCell sx={{ fontWeight: 600, textAlign: "right" }}>Balance</TableCell>
-                <TableCell sx={{ fontWeight: 600 }}>Mode</TableCell>
-                <TableCell sx={{ fontWeight: 600 }}>Status</TableCell>
-                <TableCell sx={{ fontWeight: 600, textAlign: "center" }}>Actions</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {paymentsLoading ? (
-                <TableRow>
-                  <TableCell colSpan={9} sx={{ textAlign: "center", py: 6 }}>
-                    <CircularProgress size={40} />
-                    <Typography sx={{ mt: 2, color: "#64748b" }}>
-                      Loading payments...
-                    </Typography>
-                  </TableCell>
-                </TableRow>
-              ) : !appliedFilters.clientId ? (
-                <TableRow>
-                  <TableCell colSpan={9} sx={{ textAlign: "center", py: 6 }}>
-                    <FilterListIcon sx={{ fontSize: 48, color: "#94a3b8", mb: 1 }} />
-                    <Typography variant="h6" sx={{ color: "#64748b" }}>
-                      Select a client and apply filter
-                    </Typography>
-                    <Typography variant="body2" sx={{ color: "#94a3b8" }}>
-                      Use the filters above to view payments
-                    </Typography>
-                  </TableCell>
-                </TableRow>
-              ) : payments.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={9} sx={{ textAlign: "center", py: 6 }}>
-                    <PaymentIcon sx={{ fontSize: 48, color: "#94a3b8", mb: 1 }} />
-                    <Typography variant="h6" sx={{ color: "#64748b" }}>
-                      No payments found
-                    </Typography>
-                    <Typography variant="body2" sx={{ color: "#94a3b8" }}>
-                      No payment records match the selected filters
-                    </Typography>
-                  </TableCell>
-                </TableRow>
-              ) : (
-                payments.map((payment) => (
-                  <TableRow
-                    key={payment.paymentId}
-                    sx={{
-                      "&:hover": { backgroundColor: "#f1f5f9" },
-                      backgroundColor: payment.isOverdue ? "#fef2f2" : "inherit",
-                    }}
-                  >
-                    <TableCell>
-                      <Box>
-                        <Typography sx={{ fontWeight: 500 }}>
-                          {payment.clientName}
-                        </Typography>
-                        {payment.receiptNumber && (
-                          <Typography variant="caption" color="text.secondary">
-                            {payment.receiptNumber}
-                          </Typography>
-                        )}
-                      </Box>
-                    </TableCell>
-                    <TableCell>{payment.invoiceNumber || "-"}</TableCell>
-                    <TableCell>
-                      {formatDate(payment.billDate)}
-                      {payment.isOverdue && (
+          {/* Invoice Items Table */}
+          <Paper
+            sx={{
+              borderRadius: 2,
+              boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
+              overflow: "hidden",
+              mb: 3,
+            }}
+          >
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow sx={{ backgroundColor: "#f8fafc" }}>
+                    <TableCell sx={{ fontWeight: 600 }}>Trip ID</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Route</TableCell>
+                    <TableCell sx={{ fontWeight: 600, textAlign: "right" }}>Total</TableCell>
+                    <TableCell sx={{ fontWeight: 600, textAlign: "right" }}>Paid</TableCell>
+                    <TableCell sx={{ fontWeight: 600, textAlign: "right" }}>Pending</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Status</TableCell>
+                    <TableCell sx={{ fontWeight: 600, textAlign: "center" }}>Action</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {paginatedData.map((item) => (
+                    <TableRow key={item.trip_id || item.id} sx={{ "&:hover": { backgroundColor: "#f8fafc" } }}>
+                      <TableCell sx={{ fontWeight: 600, color: "#1976d2" }}>
+                        #{item.trip_id || item.id}
+                      </TableCell>
+                      <TableCell sx={{ fontSize: "0.9rem" }}>
+                        {item.from_place} → {item.to_place}
+                      </TableCell>
+                      <TableCell sx={{ textAlign: "right", fontWeight: 600 }}>
+                        {formatCurrency(item.total_amount || item.amount)}
+                      </TableCell>
+                      <TableCell sx={{ textAlign: "right", fontWeight: 600, color: "#22c55e" }}>
+                        {formatCurrency(item.amount_paid)}
+                      </TableCell>
+                      <TableCell sx={{ textAlign: "right", fontWeight: 600, color: "#f59e0b" }}>
+                        {formatCurrency(item.pending_amount)}
+                      </TableCell>
+                      <TableCell>
                         <Chip
-                          label={`${payment.overdueDays}d overdue`}
+                          label={
+                            item.pending_amount > 0 ? "Pending" : "Paid"
+                          }
                           size="small"
-                          color="error"
-                          sx={{ ml: 1, height: 20, fontSize: "0.65rem" }}
+                          color={item.pending_amount > 0 ? "error" : "success"}
                         />
-                      )}
-                    </TableCell>
-                    <TableCell sx={{ textAlign: "right" }}>
-                      {formatCurrency(payment.totalAmount)}
-                    </TableCell>
-                    <TableCell sx={{ textAlign: "right" }}>
-                      <Typography sx={{ fontWeight: 600, color: "#059669" }}>
-                        {formatCurrency(payment.paidAmount)}
-                      </Typography>
-                    </TableCell>
-                    <TableCell sx={{ textAlign: "right" }}>
-                      <Typography
-                        sx={{
-                          fontWeight: 600,
-                          color: payment.balanceAmount > 0 ? "#dc2626" : "#059669",
-                        }}
-                      >
-                        {formatCurrency(payment.balanceAmount)}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        label={payment.paymentMode || "Cash"}
-                        size="small"
-                        sx={{
-                          backgroundColor: "#e0f2fe",
-                          color: "#0369a1",
-                          fontWeight: 600,
-                        }}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        label={payment.paymentStatus}
-                        size="small"
-                        color={getStatusColor(payment.paymentStatus)}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Box sx={{ display: "flex", gap: 0.5, justifyContent: "center" }}>
-                        <Tooltip title="View Details">
-                          <IconButton
-                            size="small"
-                            color="info"
-                            onClick={() => handleViewDetails(payment)}
-                          >
-                            <ViewIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                        <Tooltip title="Transaction History">
-                          <IconButton
-                            size="small"
-                            color="secondary"
-                            onClick={() => handleViewHistory(payment)}
-                          >
-                            <HistoryIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                        {payment.balanceAmount > 0 && (
+                      </TableCell>
+                      <TableCell sx={{ textAlign: "center" }}>
+                        {item.pending_amount > 0 && (
                           <Tooltip title="Add Payment">
                             <IconButton
                               size="small"
-                              color="success"
-                              onClick={() => handleOpenPartialDialog(payment)}
+                              color="primary"
+                              onClick={() => handlePaymentClick(item)}
                             >
-                              <AddPartialIcon fontSize="small" />
+                              <AddIcon fontSize="small" />
                             </IconButton>
                           </Tooltip>
                         )}
-                      </Box>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </TableContainer>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
 
-        {/* Pagination */}
-        {payments.length > 0 && (
-          <TablePagination
-            component="div"
-            count={totalCount}
-            page={page}
-            onPageChange={handleChangePage}
-            rowsPerPage={rowsPerPage}
-            onRowsPerPageChange={handleChangeRowsPerPage}
-            rowsPerPageOptions={[10, 25, 50, 100]}
-          />
-        )}
-      </Paper>
+            {/* Pagination */}
+            {selectedInvoiceData.length > 0 && (
+              <TablePagination
+                component="div"
+                count={selectedInvoiceData.length}
+                page={page}
+                onPageChange={handleChangePage}
+                rowsPerPage={rowsPerPage}
+                onRowsPerPageChange={handleChangeRowsPerPage}
+                rowsPerPageOptions={[5, 10, 25]}
+              />
+            )}
+          </Paper>
+        </Box>
+      )}
 
-      {/* Partial Payment Dialog */}
-      <Dialog
-        open={partialDialogOpen}
-        onClose={() => setPartialDialogOpen(false)}
-        maxWidth="sm"
+      {/* Empty State */}
+      {!loading && selectedClient && selectedInvoiceDate && selectedInvoiceData.length === 0 && (
+        <Paper
+          sx={{
+            p: 4,
+            textAlign: "center",
+            borderRadius: 2,
+            backgroundColor: "#f0fdf4",
+            border: "2px dashed #d1fae5",
+          }}
+        >
+          <Typography variant="h6" sx={{ color: "#047857", mb: 1 }}>
+            No invoice data available
+          </Typography>
+          <Typography variant="body2" sx={{ color: "#10b981" }}>
+            Please select a valid client and invoice date to view payment details.
+          </Typography>
+        </Paper>
+      )}
+
+      {/* Payment Dialog */}
+      <Dialog 
+        open={paymentDialogOpen} 
+        onClose={() => !loading && setPaymentDialogOpen(false)} 
+        maxWidth="sm" 
         fullWidth
+        disableRestoreFocus
       >
-        <DialogTitle sx={{ pb: 1 }}>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            <AddPartialIcon color="success" />
-            <Typography variant="h6">Add Payment</Typography>
-          </Box>
-        </DialogTitle>
-        <DialogContent>
-          {selectedPayment && (
-            <Box sx={{ mb: 3, p: 2, backgroundColor: "#f8fafc", borderRadius: 2 }}>
-              <Grid container spacing={2}>
-                <Grid item xs={6}>
-                  <Typography variant="caption" color="text.secondary">
-                    Client
-                  </Typography>
-                  <Typography variant="body1" fontWeight={600}>
-                    {selectedPayment.clientName}
-                  </Typography>
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="caption" color="text.secondary">
-                    Invoice
-                  </Typography>
-                  <Typography variant="body1" fontWeight={600}>
-                    {selectedPayment.invoiceNumber || "-"}
-                  </Typography>
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="caption" color="text.secondary">
-                    Total Amount
-                  </Typography>
-                  <Typography variant="body1" fontWeight={600}>
-                    {formatCurrency(selectedPayment.totalAmount)}
-                  </Typography>
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="caption" color="text.secondary">
-                    Pending Balance
-                  </Typography>
-                  <Typography variant="body1" fontWeight={600} color="error">
-                    {formatCurrency(selectedPayment.balanceAmount)}
-                  </Typography>
-                </Grid>
-              </Grid>
+        <DialogTitle sx={{ fontWeight: 600, color: "#1976d2" }}>Add Payment</DialogTitle>
+        <DialogContent sx={{ pt: 2 }}>
+          {/* Error Alert */}
+          {error && (
+            <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
+              {error}
+            </Alert>
+          )}
+
+          {selectedPaymentItem && (
+            <Box sx={{ mb: 3, p: 2, backgroundColor: "#f5f9ff", borderRadius: 1, border: "1px solid #e0e7ff" }}>
+              <Typography variant="body2" sx={{ mb: 1.5 }}>
+                <strong>Trip ID:</strong> #{selectedPaymentItem.trip_id || selectedPaymentItem.id}
+              </Typography>
+              <Typography variant="body2" sx={{ mb: 1.5 }}>
+                <strong>Route:</strong> {selectedPaymentItem.from_place} → {selectedPaymentItem.to_place}
+              </Typography>
+              <Typography variant="body2" sx={{ mb: 1.5, color: "#f59e0b" }}>
+                <strong>Total Amount:</strong> {formatCurrency(selectedPaymentItem.amount || selectedPaymentItem.total_amount)}
+              </Typography>
+              <Typography variant="body2" sx={{ mb: 1.5, color: "#22c55e" }}>
+                <strong>Already Paid:</strong> {formatCurrency(selectedPaymentItem.amount_paid || 0)}
+              </Typography>
+              <Typography variant="body2" sx={{ color: "#ef4444", fontWeight: 600 }}>
+                <strong>Pending Amount:</strong> {formatCurrency(selectedPaymentItem.pending_amount)}
+              </Typography>
+              <Divider sx={{ my: 2 }} />
             </Box>
           )}
 
           <Grid container spacing={2}>
-            <Grid item xs={12} sm={6}>
+            <Grid item xs={12}>
               <TextField
                 fullWidth
                 label="Payment Amount *"
                 type="number"
-                value={partialAmount}
-                onChange={(e) => setPartialAmount(e.target.value)}
-                InputProps={{
-                  startAdornment: <Typography sx={{ mr: 1 }}>₹</Typography>,
-                }}
-                helperText={
-                  selectedPayment
-                    ? `Max: ₹${selectedPayment.balanceAmount?.toLocaleString()}`
-                    : ""
-                }
+                value={paymentAmount}
+                onChange={(e) => setPaymentAmount(e.target.value)}
+                inputProps={{ step: "0.01", min: "0", max: selectedPaymentItem?.pending_amount || 0 }}
+                placeholder="Enter payment amount"
+                variant="outlined"
               />
+              <Typography variant="caption" sx={{ color: "#666", mt: 0.5, display: "block" }}>
+                {selectedPaymentItem ? `Max: ₹${(selectedPaymentItem.pending_amount || 0).toLocaleString("en-IN")}` : ""}
+              </Typography>
             </Grid>
-            <Grid item xs={12} sm={6}>
-              <FormControl fullWidth>
-                <InputLabel>Payment Mode</InputLabel>
+
+            <Grid item xs={12}>
+              <FormControl fullWidth size="small">
+                <InputLabel>Payment Mode *</InputLabel>
                 <Select
-                  value={partialMode}
-                  label="Payment Mode"
-                  onChange={(e) => setPartialMode(e.target.value)}
+                  value={paymentMode}
+                  label="Payment Mode *"
+                  onChange={(e) => setPaymentMode(e.target.value)}
                 >
-                  <MenuItem value="Cash">Cash</MenuItem>
-                  <MenuItem value="Bank">Bank Transfer</MenuItem>
-                  <MenuItem value="UPI">UPI</MenuItem>
-                  <MenuItem value="Cheque">Cheque</MenuItem>
+                  {PAYMENT_MODES.map((mode) => (
+                    <MenuItem key={mode.value} value={mode.value}>
+                      {mode.label}
+                    </MenuItem>
+                  ))}
                 </Select>
               </FormControl>
             </Grid>
+
             <Grid item xs={12}>
               <TextField
                 fullWidth
-                label="Reference Number"
-                value={partialReference}
-                onChange={(e) => setPartialReference(e.target.value)}
-                placeholder="Transaction ID, Cheque No., etc."
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                label="Remarks"
-                value={partialRemarks}
-                onChange={(e) => setPartialRemarks(e.target.value)}
+                label="Remarks (Optional)"
                 multiline
                 rows={2}
-                placeholder="Optional payment notes"
+                value={paymentNotes}
+                onChange={(e) => setPaymentNotes(e.target.value)}
+                placeholder="Add any notes about this payment"
+                variant="outlined"
               />
             </Grid>
           </Grid>
-
-          {/* Preview */}
-          {partialAmount && selectedPayment && Number(partialAmount) > 0 && (
-            <Box
-              sx={{
-                mt: 2,
-                p: 2,
-                backgroundColor: "#ecfdf5",
-                borderRadius: 2,
-                border: "1px solid #10b981",
-              }}
-            >
-              <Typography variant="subtitle2" color="success.dark" gutterBottom>
-                After this payment:
-              </Typography>
-              <Grid container spacing={2}>
-                <Grid item xs={6}>
-                  <Typography variant="caption">New Paid Amount</Typography>
-                  <Typography variant="body1" fontWeight={600} color="success.main">
-                    {formatCurrency(
-                      (selectedPayment.paidAmount || 0) + Number(partialAmount)
-                    )}
-                  </Typography>
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="caption">New Balance</Typography>
-                  <Typography
-                    variant="body1"
-                    fontWeight={600}
-                    color={
-                      selectedPayment.balanceAmount - Number(partialAmount) > 0
-                        ? "error.main"
-                        : "success.main"
-                    }
-                  >
-                    {formatCurrency(
-                      selectedPayment.balanceAmount - Number(partialAmount)
-                    )}
-                  </Typography>
-                </Grid>
-              </Grid>
-            </Box>
-          )}
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={() => setPartialDialogOpen(false)} sx={{ textTransform: "none" }}>
+        <DialogActions sx={{ p: 2 }}>
+          <Button 
+            onClick={() => setPaymentDialogOpen(false)}
+            disabled={loading}
+            sx={{ color: "#666" }}
+          >
             Cancel
           </Button>
           <Button
             variant="contained"
-            color="success"
-            onClick={handleAddPartialPayment}
-            disabled={partialLoading || !partialAmount || Number(partialAmount) <= 0}
-            startIcon={partialLoading ? <CircularProgress size={20} /> : <CheckCircleIcon />}
-            sx={{ textTransform: "none" }}
+            onClick={handlePaymentSubmit}
+            disabled={loading || !paymentAmount || !paymentMode}
+            sx={{
+              backgroundColor: loading ? "#ccc" : "#1976d2",
+              "&:hover": { backgroundColor: "#1565c0" },
+            }}
           >
-            {partialLoading ? "Processing..." : "Record Payment"}
+            {loading ? "Processing Payment..." : "Record Payment"}
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* Transaction History Dialog */}
-      <Dialog
-        open={historyDialogOpen}
-        onClose={() => setHistoryDialogOpen(false)}
-        maxWidth="md"
-        fullWidth
-      >
-        <DialogTitle>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            <HistoryIcon color="secondary" />
-            <Typography variant="h6">Payment Transaction History</Typography>
-          </Box>
-        </DialogTitle>
-        <DialogContent>
-          {selectedPayment && (
-            <Box sx={{ mb: 2, p: 2, backgroundColor: "#f8fafc", borderRadius: 2 }}>
-              <Typography variant="subtitle2">
-                {selectedPayment.clientName} - {selectedPayment.invoiceNumber || "No Invoice"}
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Total: {formatCurrency(selectedPayment.totalAmount)} | Paid:{" "}
-                {formatCurrency(selectedPayment.paidAmount)} | Balance:{" "}
-                {formatCurrency(selectedPayment.balanceAmount)}
-              </Typography>
-            </Box>
-          )}
-
-          {transactions.length === 0 ? (
-            <Box sx={{ textAlign: "center", py: 4 }}>
-              <HistoryIcon sx={{ fontSize: 48, color: "#94a3b8", mb: 1 }} />
-              <Typography color="text.secondary">No transaction history found</Typography>
-            </Box>
-          ) : (
-            <List>
-              {transactions.map((tx, index) => (
-                <React.Fragment key={tx.transactionId}>
-                  <ListItem alignItems="flex-start">
-                    <ListItemIcon>
-                      <CheckCircleIcon color="success" />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary={
-                        <Box sx={{ display: "flex", justifyContent: "space-between" }}>
-                          <Typography variant="subtitle2">
-                            {tx.transactionType === "initial"
-                              ? "Initial Payment"
-                              : "Partial Payment"}
-                          </Typography>
-                          <Typography variant="subtitle2" color="success.main">
-                            +{formatCurrency(tx.amount)}
-                          </Typography>
-                        </Box>
-                      }
-                      secondary={
-                        <Box sx={{ mt: 1 }}>
-                          <Typography variant="body2" component="span">
-                            {formatDate(tx.transactionDate)} | {tx.paymentMode}
-                            {tx.referenceNo && ` | Ref: ${tx.referenceNo}`}
-                          </Typography>
-                          <br />
-                          <Typography variant="caption" color="text.secondary">
-                            Balance: {formatCurrency(tx.balanceBefore)} →{" "}
-                            {formatCurrency(tx.balanceAfter)}
-                          </Typography>
-                          {tx.remarks && (
-                            <>
-                              <br />
-                              <Typography variant="caption" color="text.secondary">
-                                {tx.remarks}
-                              </Typography>
-                            </>
-                          )}
-                        </Box>
-                      }
-                    />
-                  </ListItem>
-                  {index < transactions.length - 1 && <Divider variant="inset" component="li" />}
-                </React.Fragment>
-              ))}
-            </List>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setHistoryDialogOpen(false)}>Close</Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* View Details Dialog */}
-      <Dialog
-        open={viewDialogOpen}
-        onClose={() => setViewDialogOpen(false)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            <ViewIcon color="info" />
-            <Typography variant="h6">Payment Details</Typography>
-          </Box>
-        </DialogTitle>
-        <DialogContent>
-          {selectedPayment && (
-            <Grid container spacing={2} sx={{ mt: 1 }}>
-              <Grid item xs={6}>
-                <Typography variant="caption" color="text.secondary">
-                  Receipt Number
-                </Typography>
-                <Typography variant="body1" fontWeight={600}>
-                  {selectedPayment.receiptNumber || "-"}
-                </Typography>
-              </Grid>
-              <Grid item xs={6}>
-                <Typography variant="caption" color="text.secondary">
-                  Client
-                </Typography>
-                <Typography variant="body1" fontWeight={600}>
-                  {selectedPayment.clientName}
-                </Typography>
-              </Grid>
-              <Grid item xs={6}>
-                <Typography variant="caption" color="text.secondary">
-                  Invoice Number
-                </Typography>
-                <Typography variant="body1" fontWeight={600}>
-                  {selectedPayment.invoiceNumber || "-"}
-                </Typography>
-              </Grid>
-              <Grid item xs={6}>
-                <Typography variant="caption" color="text.secondary">
-                  Bill Date
-                </Typography>
-                <Typography variant="body1" fontWeight={600}>
-                  {formatDate(selectedPayment.billDate)}
-                </Typography>
-              </Grid>
-              <Grid item xs={12}>
-                <Divider sx={{ my: 1 }} />
-              </Grid>
-              <Grid item xs={4}>
-                <Typography variant="caption" color="text.secondary">
-                  Total Amount
-                </Typography>
-                <Typography variant="h6" fontWeight={700}>
-                  {formatCurrency(selectedPayment.totalAmount)}
-                </Typography>
-              </Grid>
-              <Grid item xs={4}>
-                <Typography variant="caption" color="text.secondary">
-                  Paid Amount
-                </Typography>
-                <Typography variant="h6" fontWeight={700} color="success.main">
-                  {formatCurrency(selectedPayment.paidAmount)}
-                </Typography>
-              </Grid>
-              <Grid item xs={4}>
-                <Typography variant="caption" color="text.secondary">
-                  Balance
-                </Typography>
-                <Typography
-                  variant="h6"
-                  fontWeight={700}
-                  color={selectedPayment.balanceAmount > 0 ? "error.main" : "success.main"}
-                >
-                  {formatCurrency(selectedPayment.balanceAmount)}
-                </Typography>
-              </Grid>
-              <Grid item xs={12}>
-                <Divider sx={{ my: 1 }} />
-              </Grid>
-              <Grid item xs={6}>
-                <Typography variant="caption" color="text.secondary">
-                  Payment Mode
-                </Typography>
-                <Typography variant="body1">{selectedPayment.paymentMode || "Cash"}</Typography>
-              </Grid>
-              <Grid item xs={6}>
-                <Typography variant="caption" color="text.secondary">
-                  Status
-                </Typography>
-                <Box sx={{ mt: 0.5 }}>
-                  <Chip
-                    label={selectedPayment.paymentStatus}
-                    color={getStatusColor(selectedPayment.paymentStatus)}
-                    size="small"
-                  />
-                  {selectedPayment.isOverdue && (
-                    <Chip
-                      label={`${selectedPayment.overdueDays} days overdue`}
-                      color="error"
-                      size="small"
-                      sx={{ ml: 1 }}
-                    />
-                  )}
-                </Box>
-              </Grid>
-              {selectedPayment.referenceNo && (
-                <Grid item xs={12}>
-                  <Typography variant="caption" color="text.secondary">
-                    Reference Number
-                  </Typography>
-                  <Typography variant="body1">{selectedPayment.referenceNo}</Typography>
-                </Grid>
-              )}
-              {selectedPayment.remarks && (
-                <Grid item xs={12}>
-                  <Typography variant="caption" color="text.secondary">
-                    Remarks
-                  </Typography>
-                  <Typography variant="body2" sx={{ whiteSpace: "pre-line" }}>
-                    {selectedPayment.remarks}
-                  </Typography>
-                </Grid>
-              )}
-            </Grid>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setViewDialogOpen(false)}>Close</Button>
-          {selectedPayment?.balanceAmount > 0 && (
-            <Button
-              variant="contained"
-              color="success"
-              startIcon={<AddPartialIcon />}
-              onClick={() => {
-                setViewDialogOpen(false);
-                handleOpenPartialDialog(selectedPayment);
-              }}
-            >
-              Add Payment
-            </Button>
-          )}
-        </DialogActions>
-      </Dialog>
-
-      {/* Notification Snackbar */}
+      {/* Success Snackbar */}
       <Snackbar
-        open={notification.open}
-        autoHideDuration={5000}
-        onClose={() => setNotification({ ...notification, open: false })}
+        open={!!success}
+        autoHideDuration={4000}
+        onClose={() => setSuccess("")}
         anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
       >
-        <Alert
-          onClose={() => setNotification({ ...notification, open: false })}
-          severity={notification.severity}
-          variant="filled"
-          sx={{ width: "100%" }}
-        >
-          {notification.message}
+        <Alert onClose={() => setSuccess("")} severity="success" sx={{ width: "100%" }}>
+          {success}
         </Alert>
       </Snackbar>
     </Box>

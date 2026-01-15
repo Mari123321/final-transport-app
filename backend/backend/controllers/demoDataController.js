@@ -1,6 +1,6 @@
 import db from '../models/index.js';
 
-const { sequelize, Client, Driver, Vehicle, Trip, Invoice, Expense } = db;
+const { sequelize, Client, Driver, Vehicle, Trip, Invoice, Expense, Payment, PaymentTransaction, Dispatch, ExtraCharge } = db;
 
 /**
  * Generate demo data for testing - creates exactly 10 records for each entity
@@ -10,17 +10,31 @@ export const generateDemoData = async (req, res) => {
   try {
     console.log('🔄 Starting demo data generation...');
 
+    // CRITICAL: Disable foreign key constraints BEFORE creating transaction
+    // SQLite foreign key pragmas don't work inside transactions
+    await sequelize.query('PRAGMA foreign_keys = OFF');
+
     // Use a single transaction so we don't leave partial data on failure
     transaction = await sequelize.transaction();
 
     // Clean previous demo data first to avoid unique key clashes
     console.log('🧹 Clearing existing demo data...');
-    await Trip.destroy({ where: {}, truncate: { cascade: true }, transaction });
-    await Invoice.destroy({ where: {}, truncate: { cascade: true }, transaction });
-    await Expense.destroy({ where: {}, truncate: { cascade: true }, transaction });
-    await Vehicle.destroy({ where: {}, truncate: { cascade: true }, transaction });
-    await Driver.destroy({ where: {}, truncate: { cascade: true }, transaction });
-    await Client.destroy({ where: {}, truncate: { cascade: true }, transaction });
+    
+    // Delete all tables - order matters for cascading deletes
+    // Delete dependent tables first
+    await PaymentTransaction.destroy({ where: {}, transaction });
+    await Payment.destroy({ where: {}, transaction });
+    await ExtraCharge.destroy({ where: {}, transaction });
+    await Dispatch.destroy({ where: {}, transaction });
+    
+    // Delete main tables
+    await Trip.destroy({ where: {}, transaction });
+    await Invoice.destroy({ where: {}, transaction });
+    await Expense.destroy({ where: {}, transaction });
+    await Vehicle.destroy({ where: {}, transaction });
+    await Driver.destroy({ where: {}, transaction });
+    await Client.destroy({ where: {}, transaction });
+    
     console.log('✅ Existing demo data cleared');
 
     // Ensure generated values stay unique across repeated runs
@@ -156,6 +170,9 @@ export const generateDemoData = async (req, res) => {
     await transaction.commit();
     console.log('✅ Demo data generation completed successfully!');
 
+    // Re-enable foreign key constraints after transaction
+    await sequelize.query('PRAGMA foreign_keys = ON');
+
     res.status(201).json({
       success: true,
       message: 'Demo data generated successfully',
@@ -184,6 +201,13 @@ export const generateDemoData = async (req, res) => {
       }
     }
     
+    // Always try to re-enable foreign keys on error
+    try {
+      await sequelize.query('PRAGMA foreign_keys = ON');
+    } catch (fkError) {
+      console.error('Failed to re-enable foreign keys:', fkError);
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Failed to generate demo data',
@@ -200,38 +224,42 @@ export const clearDemoData = async (req, res) => {
   try {
     console.log('🗑️ Starting data cleanup...');
     
-    // Delete in correct order (respect foreign keys)
-    const tripCount = await Trip.destroy({ where: {}, truncate: { cascade: true } });
-    console.log(`✅ Deleted ${tripCount} trips`);
+    // Disable foreign key constraints for SQLite to allow deletion
+    await sequelize.query('PRAGMA foreign_keys = OFF');
     
-    const invoiceCount = await Invoice.destroy({ where: {}, truncate: { cascade: true } });
-    console.log(`✅ Deleted ${invoiceCount} invoices`);
+    // Delete all tables - order matters
+    const ptCount = await PaymentTransaction.destroy({ where: {} });
+    const paymentCount = await Payment.destroy({ where: {} });
+    const extraChargeCount = await ExtraCharge.destroy({ where: {} });
+    const dispatchCount = await Dispatch.destroy({ where: {} });
     
-    const expenseCount = await Expense.destroy({ where: {}, truncate: { cascade: true } });
-    console.log(`✅ Deleted ${expenseCount} expenses`);
-    
-    const vehicleCount = await Vehicle.destroy({ where: {}, truncate: { cascade: true } });
-    console.log(`✅ Deleted ${vehicleCount} vehicles`);
-    
-    const driverCount = await Driver.destroy({ where: {}, truncate: { cascade: true } });
-    console.log(`✅ Deleted ${driverCount} drivers`);
-    
-    const clientCount = await Client.destroy({ where: {}, truncate: { cascade: true } });
-    console.log(`✅ Deleted ${clientCount} clients`);
+    const tripCount = await Trip.destroy({ where: {} });
+    const invoiceCount = await Invoice.destroy({ where: {} });
+    const expenseCount = await Expense.destroy({ where: {} });
+    const vehicleCount = await Vehicle.destroy({ where: {} });
+    const driverCount = await Driver.destroy({ where: {} });
+    const clientCount = await Client.destroy({ where: {} });
 
+    // Re-enable foreign key constraints
+    await sequelize.query('PRAGMA foreign_keys = ON');
+    
     console.log('✅ Data cleanup completed successfully!');
 
     res.json({
       success: true,
       message: 'All data cleared successfully',
       deleted: {
+        paymentTransactions: ptCount,
+        payments: paymentCount,
+        extraCharges: extraChargeCount,
+        dispatches: dispatchCount,
         trips: tripCount,
         invoices: invoiceCount,
         expenses: expenseCount,
         vehicles: vehicleCount,
         drivers: driverCount,
         clients: clientCount,
-        total: tripCount + invoiceCount + expenseCount + vehicleCount + driverCount + clientCount
+        total: ptCount + paymentCount + extraChargeCount + dispatchCount + tripCount + invoiceCount + expenseCount + vehicleCount + driverCount + clientCount
       }
     });
   } catch (error) {
@@ -240,6 +268,13 @@ export const clearDemoData = async (req, res) => {
       message: error.message,
       stack: error.stack
     });
+    
+    // Try to re-enable foreign keys even on error
+    try {
+      await sequelize.query('PRAGMA foreign_keys = ON');
+    } catch (e) {
+      console.error('Failed to re-enable foreign keys:', e);
+    }
     
     res.status(500).json({
       success: false,

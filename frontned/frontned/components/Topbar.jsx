@@ -54,9 +54,10 @@ const Topbar = ({ children }) => {
     return () => clearInterval(interval);
   }, []);
 
-  const pendingCount = notifications?.pendingInvoices?.length || 0;
-  const expiringCount = notifications?.expiringLicenses?.length || 0;
-  const totalCount = pendingCount + expiringCount;
+  const criticalCount = notifications?.criticalPayments?.length || 0;
+  const licenseCount = notifications?.expiringLicenses?.length || 0;
+  const rcCount = notifications?.expiringRC?.length || 0;
+  const totalCount = criticalCount + licenseCount + rcCount;
 
   return (
     <>
@@ -143,7 +144,7 @@ const Topbar = ({ children }) => {
                 disableScrollLock
               >
                 <MenuItem disabled sx={{ fontWeight: 600, fontSize: 14 }}>
-                  Notifications
+                  🔔 Important Notifications
                 </MenuItem>
                 <Divider />
 
@@ -158,41 +159,97 @@ const Topbar = ({ children }) => {
                 {/* Error State */}
                 {error && <MenuItem disabled>Error: {error}</MenuItem>}
 
-                {/* Pending Invoices */}
-                {pendingCount > 0 ? (
-                  notifications.pendingInvoices.map((inv, i) => (
-                    <MenuItem
-                      key={`inv-${i}`}
-                      onClick={() => {
-                        handleCloseNotif();
-                        navigate(`/invoices/${inv.id}`);
-                      }}
-                    >
-                      🧾 Invoice #{inv.invoice_no} – ${inv.amount} is pending
-                    </MenuItem>
-                  ))
-                ) : (
-                  <MenuItem disabled>No pending invoices</MenuItem>
+                {/* Empty State */}
+                {notifications && totalCount === 0 && (
+                  <MenuItem disabled sx={{ color: "green" }}>
+                    ✅ All clear! No urgent notifications
+                  </MenuItem>
                 )}
 
-                <Divider />
+                {/* Critical Payments > 200,000 */}
+                {criticalCount > 0 && (
+                  <>
+                    <MenuItem disabled sx={{ fontWeight: 600, fontSize: 12, color: "#d32f2f" }}>
+                      🚨 CRITICAL PAYMENTS (&gt; ₹2L)
+                    </MenuItem>
+                    {notifications.criticalPayments.map((inv, i) => (
+                      <MenuItem
+                        key={`critical-${i}`}
+                        onClick={() => {
+                          handleCloseNotif();
+                          navigate(`/invoices`);
+                        }}
+                        sx={{ bgcolor: "#ffebee", "&:hover": { bgcolor: "#ffcdd2" } }}
+                      >
+                        <Box>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            🧾 Invoice #{inv.invoice_no}
+                          </Typography>
+                          <Typography variant="caption" color="error">
+                            Pending: ₹{parseFloat(inv.pending_amount).toLocaleString("en-IN")}
+                          </Typography>
+                        </Box>
+                      </MenuItem>
+                    ))}
+                    <Divider />
+                  </>
+                )}
 
                 {/* Expiring Licenses */}
-                {expiringCount > 0 ? (
-                  notifications.expiringLicenses.map((lic, i) => (
-                    <MenuItem
-                      key={`lic-${i}`}
-                      onClick={() => {
-                        handleCloseNotif();
-                        navigate(`/drivers/${lic.driver_id}`);
-                      }}
-                    >
-                      🚦 Driver {lic.driver_name}'s license expires on{" "}
-                      {new Date(lic.expiry_date).toLocaleDateString()}
+                {licenseCount > 0 && (
+                  <>
+                    <MenuItem disabled sx={{ fontWeight: 600, fontSize: 12, color: "#f57c00" }}>
+                      🚦 LICENSE EXPIRING SOON
                     </MenuItem>
-                  ))
-                ) : (
-                  <MenuItem disabled>No expiring licenses</MenuItem>
+                    {notifications.expiringLicenses.map((lic, i) => (
+                      <MenuItem
+                        key={`lic-${i}`}
+                        onClick={() => {
+                          handleCloseNotif();
+                          navigate(`/drivers`);
+                        }}
+                        sx={{ bgcolor: "#fff3e0", "&:hover": { bgcolor: "#ffe0b2" } }}
+                      >
+                        <Box>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            {lic.driver_name}
+                          </Typography>
+                          <Typography variant="caption" color="textSecondary">
+                            Expires: {new Date(lic.expiry_date).toLocaleDateString("en-IN")}
+                          </Typography>
+                        </Box>
+                      </MenuItem>
+                    ))}
+                    <Divider />
+                  </>
+                )}
+
+                {/* Expiring RC */}
+                {rcCount > 0 && (
+                  <>
+                    <MenuItem disabled sx={{ fontWeight: 600, fontSize: 12, color: "#f57c00" }}>
+                      🚗 RC UPDATE NEEDED
+                    </MenuItem>
+                    {notifications.expiringRC.map((rc, i) => (
+                      <MenuItem
+                        key={`rc-${i}`}
+                        onClick={() => {
+                          handleCloseNotif();
+                          navigate(`/vehicles`);
+                        }}
+                        sx={{ bgcolor: "#fff3e0", "&:hover": { bgcolor: "#ffe0b2" } }}
+                      >
+                        <Box>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            {rc.vehicle_number}
+                          </Typography>
+                          <Typography variant="caption" color="textSecondary">
+                            RC Expires: {new Date(rc.expiry_date).toLocaleDateString("en-IN")}
+                          </Typography>
+                        </Box>
+                      </MenuItem>
+                    ))}
+                  </>
                 )}
               </Menu>
 

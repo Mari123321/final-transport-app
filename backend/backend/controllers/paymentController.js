@@ -15,6 +15,37 @@ import { Op, fn, col } from "sequelize";
 const { Client, Payment, Invoice, sequelize } = db;
 
 // ============================================================
+// PAYMENT MODE NORMALIZATION - UPPERCASE ENUM
+// ============================================================
+const normalizePaymentMode = (mode) => {
+  if (!mode) return 'CASH';
+  
+  // Convert to uppercase
+  const upper = String(mode).toUpperCase();
+  
+  // Handle common variations
+  const normalizedMap = {
+    'CASH': 'CASH',
+    'CHEQUE': 'CHEQUE',
+    'CHECK': 'CHEQUE',
+    'BANK': 'BANK',
+    'BANK TRANSFER': 'BANK',
+    'BANKTRANSFER': 'BANK',
+    'ONLINE': 'BANK',
+    'UPI': 'UPI',
+    'UPIPAYMENT': 'UPI'
+  };
+  
+  const normalized = normalizedMap[upper];
+  if (!normalized) {
+    console.warn(`Unknown payment mode: ${mode}, defaulting to CASH`);
+    return 'CASH';
+  }
+  
+  return normalized;
+};
+
+// ============================================================
 // GET ALL PAYMENTS - With Full Filtering Support
 // ============================================================
 export const getAllPayments = async (req, res) => {
@@ -367,52 +398,94 @@ export const createPayment = async (req, res) => {
 
     const total = Number(totalAmount);
     const paid = Number(paidAmount) || 0;
-    const effectivePaymentMode = paymentMode || payment_mode || 'Cash';
+    const rawPaymentMode = paymentMode || payment_mode || 'CASH';
+    const normalizedPaymentMode = normalizePaymentMode(rawPaymentMode);
     const effectiveReferenceNo = referenceNo || reference_no;
 
-    // Create payment (status and balance calculated by hook)
-    const newPayment = await Payment.create({
-      client_id: clientId,
-      invoice_id: invoiceId || null,
-      total_amount: total,
-      paid_amount: paid,
-      balance_amount: total - paid,
-      bill_date: effectiveBillDate,
-      payment_date: paymentDate || (paid > 0 ? new Date().toISOString().split('T')[0] : null),
-      due_date: dueDate,
-      payment_mode: effectivePaymentMode,
-      reference_no: effectiveReferenceNo,
-      remarks,
-    });
-
-    // If linked to invoice, update invoice payment status
-    if (invoiceId) {
-      await updateInvoicePaymentStatus(invoiceId);
+    // Validate payment amount doesn't exceed total
+    if (paid > total) {
+      return res.status(400).json({
+        success: false,
+        error: "Payment amount cannot exceed total amount",
+        detail: `Paid amount (₹${paid}) exceeds total amount (₹${total})`
+      });
     }
 
-    // Fetch full payment with associations
-    const payment = await Payment.findByPk(newPayment.payment_id, {
-      include: [
-        { model: Client, as: "client", attributes: ["client_id", "client_name"] },
-        { model: Invoice, as: "invoice", attributes: ["invoice_id", "invoice_number"], required: false }
-      ]
-    });
+    // Start atomic transaction
+    const transaction = await sequelize.transaction();
 
-    res.status(201).json({
-      success: true,
-      message: "Payment created successfully",
-      data: {
-        paymentId: payment.payment_id,
-        receiptNumber: payment.receipt_number,
-        clientName: payment.client?.client_name,
-        invoiceNumber: payment.invoice?.invoice_number,
-        totalAmount: parseFloat(payment.total_amount),
-        paidAmount: parseFloat(payment.paid_amount),
-        balanceAmount: parseFloat(payment.balance_amount),
-        paymentStatus: payment.payment_status,
-        billDate: payment.bill_date,
+    try {
+      // Create payment record
+      const newPayment = await Payment.create({
+        client_id: clientId,
+        invoice_id: invoiceId || null,
+        total_amount: total,
+        paid_amount: paid,
+        balance_amount: total - paid,
+        bill_date: effectiveBillDate,
+        payment_date: paymentDate || (paid > 0 ? new Date().toISOString().split('T')[0] : null),
+        due_date: dueDate || null,
+        payment_mode: normalizedPaymentMode,
+        reference_no: effectiveReferenceNo || null,
+        remarks: remarks || null,
+      }, { transaction });
+
+      // If linked to invoice, update invoice payment status within transaction
+      if (invoiceId) {
+        const invoice = await Invoice.findByPk(invoiceId, { transaction });
+        if (invoice) {
+          const currentPaid = parseFloat(invoice.amount_paid) || 0;
+          const newPaidAmount = currentPaid + paid;
+          const newPendingAmount = parseFloat(invoice.total_amount) - newPaidAmount;
+          
+          await invoice.update({
+            amount_paid: newPaidAmount,
+            pending_amount: Math.max(0, newPendingAmount),
+            payment_status: newPendingAmount <= 0 ? 'Paid' : newPaidAmount > 0 ? 'Partial' : 'Unpaid'
+          }, { transaction });
+        }
       }
-    });
+
+      // Commit transaction
+      await transaction.commit();
+
+      // Fetch full payment with associations
+      const payment = await Payment.findByPk(newPayment.payment_id, {
+        include: [
+          { model: Client, as: "client", attributes: ["client_id", "client_name"] },
+          { model: Invoice, as: "invoice", attributes: ["invoice_id", "invoice_number", "total_amount", "amount_paid", "pending_amount"], required: false }
+        ]
+      });
+
+      res.status(201).json({
+        success: true,
+        message: "Payment created successfully",
+        data: {
+          paymentId: payment.payment_id,
+          receiptNumber: payment.receipt_number,
+          clientName: payment.client?.client_name,
+          invoiceNumber: payment.invoice?.invoice_number,
+          totalAmount: parseFloat(payment.total_amount),
+          paidAmount: parseFloat(payment.paid_amount),
+          balanceAmount: parseFloat(payment.balance_amount),
+          paymentStatus: payment.payment_status,
+          paymentMode: payment.payment_mode,
+          billDate: payment.bill_date,
+          // Include updated invoice summary if available
+          invoice: payment.invoice ? {
+            invoiceId: payment.invoice.invoice_id,
+            invoiceNumber: payment.invoice.invoice_number,
+            totalAmount: parseFloat(payment.invoice.total_amount),
+            amountPaid: parseFloat(payment.invoice.amount_paid),
+            pendingAmount: parseFloat(payment.invoice.pending_amount)
+          } : null
+        }
+      });
+    } catch (error) {
+      // Rollback transaction on error
+      await transaction.rollback();
+      throw error;
+    }
   } catch (error) {
     console.error("Error creating payment:", error);
     res.status(500).json({

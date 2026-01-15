@@ -43,6 +43,7 @@ const DriverExpensesPage = () => {
   const [expenses, setExpenses] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [vehicles, setVehicles] = useState([]);
+  const [availableDates, setAvailableDates] = useState([]); // For driver-based date dropdown
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState(null);
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
@@ -61,8 +62,7 @@ const DriverExpensesPage = () => {
 
   const [filters, setFilters] = useState({
     driver_id: '',
-    start_date: '',
-    end_date: '',
+    date: '', // Single date selection like Smart Payments
   });
 
   useEffect(() => {
@@ -99,13 +99,33 @@ const DriverExpensesPage = () => {
     }
   };
 
+  // Fetch available dates for selected driver - matches Smart Payments pattern
+  const fetchDatesForDriver = async (driverId) => {
+    if (!driverId) {
+      setAvailableDates([]);
+      return;
+    }
+
+    try {
+      const res = await api.get(`/api/driver-expenses/dates?driver_id=${driverId}`);
+      setAvailableDates(res.data.data || []);
+    } catch (error) {
+      console.error('Error fetching dates for driver:', error);
+      showSnackbar('Failed to load expense dates', 'error');
+      setAvailableDates([]);
+    }
+  };
+
   const fetchExpenses = async () => {
     try {
       setLoading(true);
       const params = new URLSearchParams();
       if (filters.driver_id) params.append('driver_id', filters.driver_id);
-      if (filters.start_date) params.append('start_date', filters.start_date);
-      if (filters.end_date) params.append('end_date', filters.end_date);
+      if (filters.date) {
+        // Use date as both start and end for exact match
+        params.append('start_date', filters.date);
+        params.append('end_date', filters.date);
+      }
 
       const res = await api.get(`/api/driver-expenses?${params.toString()}`);
       setExpenses(res.data.data || []);
@@ -193,6 +213,27 @@ const DriverExpensesPage = () => {
     setSnackbar({ open: true, message, severity });
   };
 
+  // Handle driver selection - matches Smart Payments pattern
+  const handleDriverChange = (e) => {
+    const driverId = e.target.value;
+    setFilters({
+      driver_id: driverId,
+      date: '', // Reset date when driver changes
+    });
+    
+    // Fetch dates for the selected driver
+    if (driverId) {
+      fetchDatesForDriver(driverId);
+    } else {
+      setAvailableDates([]);
+    }
+  };
+
+  // Handle date selection
+  const handleDateChange = (e) => {
+    setFilters(prev => ({ ...prev, date: e.target.value }));
+  };
+
   const getDriverName = (driverId) => {
     const driver = drivers.find(d => d.id === driverId);
     return driver ? driver.name : 'N/A';
@@ -253,18 +294,18 @@ const DriverExpensesPage = () => {
         </Grid>
       </Grid>
 
-      {/* Filters and Actions */}
+      {/* Filters and Actions - Smart Payments Pattern */}
       <Paper sx={{ p: 2, mb: 3 }}>
         <Grid container spacing={2} alignItems="center">
           <Grid item xs={12} md={3}>
             <FormControl fullWidth size="small">
-              <InputLabel>Filter by Driver</InputLabel>
+              <InputLabel>Select Driver *</InputLabel>
               <Select
                 value={filters.driver_id}
-                label="Filter by Driver"
-                onChange={(e) => setFilters(prev => ({ ...prev, driver_id: e.target.value }))}
+                label="Select Driver *"
+                onChange={handleDriverChange}
               >
-                <MenuItem value="">All Drivers</MenuItem>
+                <MenuItem value="">-- Select Driver --</MenuItem>
                 {drivers.map(driver => (
                   <MenuItem key={driver.id} value={driver.id}>
                     {driver.name}
@@ -274,29 +315,43 @@ const DriverExpensesPage = () => {
             </FormControl>
           </Grid>
           <Grid item xs={12} md={3}>
-            <AppDatePicker
-              label="Start Date"
-              value={filters.start_date}
-              onChange={(val) => setFilters(prev => ({ ...prev, start_date: val ? val.format('YYYY-MM-DD') : '' }))}
-              fullWidth
-            />
+            <FormControl fullWidth size="small" disabled={!filters.driver_id}>
+              <InputLabel>Select Date</InputLabel>
+              <Select
+                value={filters.date}
+                label="Select Date"
+                onChange={handleDateChange}
+              >
+                <MenuItem value="">-- Select Date --</MenuItem>
+                {availableDates.map(date => (
+                  <MenuItem key={date} value={date}>
+                    {new Date(date).toLocaleDateString('en-IN', {
+                      day: 'numeric',
+                      month: 'short',
+                      year: 'numeric'
+                    })}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
           </Grid>
-          <Grid item xs={12} md={3}>
-            <AppDatePicker
-              label="End Date"
-              value={filters.end_date}
-              onChange={(val) => setFilters(prev => ({ ...prev, end_date: val ? val.format('YYYY-MM-DD') : '' }))}
-              fullWidth
-            />
-          </Grid>
-          <Grid item xs={12} md={3}>
+          <Grid item xs={12} md={4}>
             <Box sx={{ display: 'flex', gap: 1 }}>
-              <Button variant="contained" onClick={fetchExpenses} fullWidth>
+              <Button 
+                variant="contained" 
+                onClick={fetchExpenses} 
+                fullWidth
+                disabled={!filters.driver_id}
+              >
                 Apply Filter
               </Button>
               <Button
                 variant="outlined"
-                onClick={() => setFilters({ driver_id: '', start_date: '', end_date: '' })}
+                onClick={() => {
+                  setFilters({ driver_id: '', date: '' });
+                  setAvailableDates([]);
+                  fetchExpenses();
+                }}
               >
                 Clear
               </Button>

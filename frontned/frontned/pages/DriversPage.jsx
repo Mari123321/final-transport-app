@@ -1,12 +1,36 @@
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import {
-  Box, Typography, Button, Dialog, DialogTitle, DialogContent, DialogActions,
-  TextField, Grid, Table, TableBody, TableCell, TableContainer, TableHead,
-  TableRow, Paper, IconButton, Chip, Alert, Checkbox, Toolbar
+  Box,
+  Typography,
+  Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  TextField,
+  Grid,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Paper,
+  Chip,
+  Alert,
+  Checkbox,
+  Card,
+  CardContent,
+  Snackbar,
 } from "@mui/material";
-import { Delete, Edit, Warning } from "@mui/icons-material";
+import { Warning, DirectionsCar, Person, LocalGasStation } from "@mui/icons-material";
 import AppDatePicker from "../components/common/AppDatePicker";
+import ActionButtons from "../components/common/ActionButtons";
+import ConfirmDeleteDialog from "../components/common/ConfirmDeleteDialog";
+import EmptyState from "../components/common/EmptyState";
+import KPICard from "../components/common/KPICard";
+import LoadingSkeleton from "../components/LoadingSkeleton";
 
 const API = "http://localhost:5000/api";
 
@@ -21,6 +45,15 @@ const DriversPage = () => {
   const [search, setSearch] = useState("");
   const [alerts, setAlerts] = useState([]);
   const [selectedDrivers, setSelectedDrivers] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [toastOpen, setToastOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
+  const [toastSeverity, setToastSeverity] = useState("error");
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   // Note: Use aadhaar_no to match backend DB column
   const [formData, setFormData] = useState({
@@ -36,6 +69,7 @@ const DriversPage = () => {
 
   // ============== API ==============
   const fetchDrivers = async () => {
+    setLoading(true);
     try {
       const res = await axios.get(`${API}/drivers`);
       const list = Array.isArray(res.data) ? res.data : res.data?.data || [];
@@ -44,6 +78,8 @@ const DriversPage = () => {
     } catch (err) {
       console.error("Error fetching drivers", err.response?.data || err.message);
       setDrivers([]);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -126,23 +162,33 @@ const DriversPage = () => {
 
     // validations
     if (!name || !address || !phone || !license_number || !aadhaarDigits) {
-      alert("All fields required!");
+      setToastSeverity("warning");
+      setToastMessage("All fields are required!");
+      setToastOpen(true);
       return;
     }
     if (phone.length !== 10) {
-      alert("Phone must be 10 digits");
+      setToastSeverity("warning");
+      setToastMessage("Phone must be 10 digits");
+      setToastOpen(true);
       return;
     }
     if (aadhaarDigits.length !== 16) {
-      alert("Aadhaar must be 16 digits");
+      setToastSeverity("warning");
+      setToastMessage("Aadhaar must be 16 digits");
+      setToastOpen(true);
       return;
     }
     if (license_number.length !== 15) {
-      alert("License Number must be exactly 15 characters");
+      setToastSeverity("warning");
+      setToastMessage("License Number must be exactly 15 characters");
+      setToastOpen(true);
       return;
     }
     if (serial_number && serial_number.length !== 3) {
-      alert("Serial number must be 3 characters");
+      setToastSeverity("warning");
+      setToastMessage("Serial number must be 3 characters");
+      setToastOpen(true);
       return;
     }
 
@@ -157,16 +203,26 @@ const DriversPage = () => {
       license_expiry_date: license_expiry_date ? new Date(license_expiry_date).toISOString().split("T")[0] : null,
     };
 
+    setSaving(true);
     try {
       if (editDriverId) {
         await axios.put(`${API}/drivers/${editDriverId}`, payload);
+        setToastSeverity("success");
+        setToastMessage("Driver updated successfully!");
       } else {
         await axios.post(`${API}/drivers`, payload);
+        setToastSeverity("success");
+        setToastMessage("Driver added successfully!");
       }
+      setToastOpen(true);
       fetchDrivers();
       handleClose();
     } catch (err) {
-      alert("Error: " + (err.response?.data?.message || "Submit failed"));
+      setToastSeverity("error");
+      setToastMessage("Error: " + (err.response?.data?.message || "Submit failed"));
+      setToastOpen(true);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -188,29 +244,59 @@ const DriversPage = () => {
     setOpen(true);
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm("Are you sure?")) return;
+  const handleDeleteClick = (id, name) => {
+    setDeleteTarget({ id, name });
+    setDeleteConfirmOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
     try {
-      await axios.delete(`${API}/drivers/${id}`);
+      await axios.delete(`${API}/drivers/${deleteTarget.id}`);
       fetchDrivers();
-    } catch {
-      alert("Delete failed");
+      setToastSeverity("success");
+      setToastMessage("Driver deleted successfully!");
+      setToastOpen(true);
+    } catch (e) {
+      setToastSeverity("error");
+      setToastMessage("Delete failed");
+      setToastOpen(true);
+    } finally {
+      setDeleting(false);
+      setDeleteConfirmOpen(false);
+      setDeleteTarget(null);
     }
+  };
+
+  const handleDeleteCancel = () => {
+    setDeleteConfirmOpen(false);
+    setDeleteTarget(null);
   };
 
   const handleBulkDelete = async () => {
     if (selectedDrivers.length === 0) {
-      alert("No drivers selected");
+      setToastSeverity("warning");
+      setToastMessage("No drivers selected for deletion.");
+      setToastOpen(true);
       return;
     }
-    if (!window.confirm(`Delete ${selectedDrivers.length} drivers?`)) return;
+    if (!window.confirm(`Delete ${selectedDrivers.length} drivers? This action cannot be undone.`)) return;
 
+    setBulkDeleting(true);
     try {
       await axios.post(`${API}/drivers/bulk-delete`, { ids: selectedDrivers });
       setSelectedDrivers([]);
       fetchDrivers();
-    } catch {
-      alert("Bulk delete failed");
+      setToastSeverity("success");
+      setToastMessage(`${selectedDrivers.length} drivers deleted successfully!`);
+      setToastOpen(true);
+    } catch (e) {
+      setToastSeverity("error");
+      setToastMessage("Bulk delete failed");
+      setToastOpen(true);
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -241,40 +327,126 @@ const DriversPage = () => {
     (d.name || "").toLowerCase().includes(search.toLowerCase())
   );
 
+  // KPIs
+  const kpis = useMemo(() => ({
+    totalDrivers: drivers.length,
+    activeDrivers: drivers.filter(d => !isLicenseExpired(d.license_expiry_date)).length,
+    totalDieselCost: drivers.reduce((sum, d) => sum + (parseFloat(d?.diesel_cost) || 0), 0),
+  }), [drivers]);
+
+  const formatDate = (value) =>
+    value ? new Date(value).toLocaleDateString("en-IN", { year: "numeric", month: "short", day: "numeric" }) : "-";
+
+  const licenseStatus = (driver) => {
+    if (!driver.license_expiry_date) return { label: "Not set", color: "default" };
+    if (isLicenseExpired(driver.license_expiry_date)) return { label: "Expired", color: "error" };
+    if (isLicenseExpiringSoon(driver.license_expiry_date)) return { label: "Expiring soon", color: "warning" };
+    return { label: "Valid", color: "success" };
+  };
+
+  const cardStyle = {
+    p: 3,
+    mb: 3,
+    borderRadius: 2,
+    boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
+    border: "1px solid #e2e8f0",
+    background: "white",
+  };
+
   // ============== UI ==============
   return (
-    <Box p={2}>
-      <Typography variant="h5" mb={2}>
-        Drivers Management
-      </Typography>
+    <Box sx={{ p: { xs: 2, sm: 3 } }}>
+      {/* Header */}
+      <Box sx={{ mb: 3 }}>
+        <Typography variant="h4" sx={{ fontWeight: 700, color: "#1e293b", mb: 0.5 }}>
+          Drivers
+        </Typography>
+        <Typography variant="body2" sx={{ color: "#64748b" }}>
+          Manage driver records, license validity, and quick actions
+        </Typography>
+      </Box>
 
-      {alerts.map((alert, idx) => (
-        <Alert key={idx} severity={alert.type === "expired" ? "error" : "warning"} sx={{ mb: 1 }}>
-          {alert.message}
-        </Alert>
-      ))}
+      {/* KPI Cards */}
+      {loading ? (
+        <LoadingSkeleton variant="cards" />
+      ) : (
+        <Grid container spacing={3} sx={{ mb: 3 }}>
+          <Grid item xs={12} md={4}>
+            <KPICard
+              title="Total Drivers"
+              value={kpis.totalDrivers}
+              subtitle={`${kpis.activeDrivers} with valid licenses`}
+              color="linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
+              icon={Person}
+            />
+          </Grid>
+          <Grid item xs={12} md={4}>
+            <KPICard
+              title="Active Drivers"
+              value={kpis.activeDrivers}
+              subtitle="Valid license status"
+              color="linear-gradient(135deg, #f093fb 0%, #f5576c 100%)"
+              icon={DirectionsCar}
+            />
+          </Grid>
+          <Grid item xs={12} md={4}>
+            <KPICard
+              title="Total Diesel Cost"
+              value={`₹${kpis.totalDieselCost.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
+              subtitle="Cumulative fuel expenses"
+              color="linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)"
+              icon={LocalGasStation}
+            />
+          </Grid>
+        </Grid>
+      )}
 
-      <Toolbar disableGutters sx={{ justifyContent: "space-between", mb: 2 }}>
-        <Box>
-          <Button variant="contained" color="primary" onClick={handleOpen} sx={{ mr: 1 }}>
-            {editDriverId ? "Edit Driver" : "Add Driver"}
-          </Button>
-          <Button
-            variant="contained"
-            color="error"
-            disabled={selectedDrivers.length === 0}
-            onClick={handleBulkDelete}
-          >
-            Delete Selected
-          </Button>
-        </Box>
-        <TextField
-          size="small"
-          placeholder="Search..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-      </Toolbar>
+      {/* Alerts */}
+      {alerts.length > 0 && (
+        <Card sx={{ ...cardStyle, mb: 2 }}>
+          <CardContent sx={{ p: 2 }}>
+            <Grid container spacing={1}>
+              {alerts.map((alert, idx) => (
+                <Grid item xs={12} key={idx}>
+                  <Alert severity={alert.type === "expired" ? "error" : "warning"}>{alert.message}</Alert>
+                </Grid>
+              ))}
+            </Grid>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Actions & Filters */}
+      <Paper sx={cardStyle}>
+        <Grid container spacing={2} alignItems="center">
+          <Grid item xs={12} md={7} display="flex" gap={1} flexWrap="wrap">
+            <Button variant="contained" color="primary" onClick={handleOpen} disabled={saving || deleting}>
+              Add Driver
+            </Button>
+            <Button
+              variant="outlined"
+              color="error"
+              disabled={selectedDrivers.length === 0 || bulkDeleting}
+              onClick={handleBulkDelete}
+            >
+              Delete Selected
+            </Button>
+            <Button variant="outlined" color="secondary" onClick={fillDemoData}>
+              Fill Demo Data
+            </Button>
+          </Grid>
+          <Grid item xs={12} md={5} display="flex" justifyContent="flex-end">
+            <TextField
+              fullWidth
+              size="small"
+              label="Search drivers"
+              placeholder="Search by name"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </Grid>
+        </Grid>
+      </Paper>
 
       {/* Add/Edit Dialog */}
       <Dialog open={open} onClose={handleClose} fullWidth maxWidth="md">
@@ -369,88 +541,128 @@ const DriversPage = () => {
           </Grid>
         </DialogContent>
         <DialogActions>
-          <Button onClick={handleClose}>Cancel</Button>
-          <Button onClick={fillDemoData} variant="outlined" color="secondary">
+          <Button onClick={handleClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={fillDemoData} variant="outlined" color="secondary" disabled={saving}>
             Fill Demo Data
           </Button>
-          <Button onClick={handleSubmit} variant="contained">
-            {editDriverId ? "Update" : "Add"}
+          <Button onClick={handleSubmit} variant="contained" disabled={saving}>
+            {saving ? "Saving..." : (editDriverId ? "Update" : "Add")}
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* Table */}
-      <TableContainer component={Paper} sx={{ mt: 3 }}>
-        <Table>
-          <TableHead>
-            <TableRow>
-              <TableCell padding="checkbox">
-                <Checkbox
-                  checked={allSelected}
-                  indeterminate={!allSelected && selectedDrivers.some((id) => allVisibleIds.includes(id))}
-                  onChange={toggleSelectAll}
-                />
-              </TableCell>
-              <TableCell>Serial No.</TableCell>
-              <TableCell>Name</TableCell>
-              <TableCell>Address</TableCell>
-              <TableCell>Phone</TableCell>
-              <TableCell>License No.</TableCell>
-              <TableCell>Aadhaar No.</TableCell>
-              <TableCell>Joining Date</TableCell>
-              <TableCell>License Expiry</TableCell>
-              <TableCell>Actions</TableCell>
-            </TableRow>
-          </TableHead>
-
-          <TableBody>
-            {filteredDrivers.length === 0 && (
+      {/* Drivers Table */}
+      <Paper sx={{ ...cardStyle, overflow: "hidden" }}>
+        {loading ? (
+          <LoadingSkeleton variant="table" rows={8} />
+        ) : (
+          <TableContainer sx={{ maxHeight: 520 }}>
+          <Table stickyHeader>
+            <TableHead>
               <TableRow>
-                <TableCell colSpan={10} align="center">
-                  No drivers found.
-                </TableCell>
-              </TableRow>
-            )}
-
-            {filteredDrivers.map((driver, index) => (
-              <TableRow key={driver.id} hover>
-                <TableCell padding="checkbox">
+                <TableCell padding="checkbox" sx={{ background: "#f8fafc" }}>
                   <Checkbox
-                    checked={selectedDrivers.includes(driver.id)}
-                    onChange={() => toggleSelect(driver.id)}
+                    checked={allSelected}
+                    indeterminate={!allSelected && selectedDrivers.some((id) => allVisibleIds.includes(id))}
+                    onChange={toggleSelectAll}
                   />
                 </TableCell>
-                <TableCell>{index + 1}</TableCell>
-                <TableCell>{driver.name}</TableCell>
-                <TableCell>{driver.address || "-"}</TableCell>
-                <TableCell>{driver.phone}</TableCell>
-                <TableCell>{driver.license_number}</TableCell>
-                <TableCell>{formatAadhaar(driver.aadhaar_no)}</TableCell>
-                <TableCell>{driver.joining_date ? new Date(driver.joining_date).toLocaleDateString() : "-"}</TableCell>
-                <TableCell>
-                  {driver.license_expiry_date ? (
-                    isLicenseExpired(driver.license_expiry_date) ? (
-                      <Chip icon={<Warning />} label="Expired!" color="error" size="small" />
-                    ) : (
-                      new Date(driver.license_expiry_date).toLocaleDateString()
-                    )
-                  ) : (
-                    "-"
-                  )}
-                </TableCell>
-                <TableCell>
-                  <IconButton onClick={() => handleEdit(driver)} color="primary" size="small">
-                    <Edit />
-                  </IconButton>
-                  <IconButton onClick={() => handleDelete(driver.id)} color="error" size="small">
-                    <Delete />
-                  </IconButton>
-                </TableCell>
+                <TableCell sx={{ background: "#f8fafc", fontWeight: 600 }}>Serial No.</TableCell>
+                <TableCell sx={{ background: "#f8fafc", fontWeight: 600 }}>Name</TableCell>
+                <TableCell sx={{ background: "#f8fafc", fontWeight: 600 }}>Phone</TableCell>
+                <TableCell sx={{ background: "#f8fafc", fontWeight: 600 }}>License No.</TableCell>
+                <TableCell sx={{ background: "#f8fafc", fontWeight: 600 }}>Aadhaar No.</TableCell>
+                <TableCell sx={{ background: "#f8fafc", fontWeight: 600 }}>Joining Date</TableCell>
+                <TableCell sx={{ background: "#f8fafc", fontWeight: 600 }}>License Expiry</TableCell>
+                <TableCell sx={{ background: "#f8fafc", fontWeight: 600 }}>Status</TableCell>
+                <TableCell sx={{ background: "#f8fafc", fontWeight: 600 }}>Actions</TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
+            </TableHead>
+
+            <TableBody>
+              {filteredDrivers.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={10}>
+                    <EmptyState
+                      message="No drivers found"
+                      submessage="Try adjusting filters or add a new driver."
+                    />
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filteredDrivers.map((driver, index) => {
+                  const status = licenseStatus(driver);
+                  return (
+                    <TableRow key={driver.id} hover>
+                      <TableCell padding="checkbox">
+                        <Checkbox
+                          checked={selectedDrivers.includes(driver.id)}
+                          onChange={() => toggleSelect(driver.id)}
+                        />
+                      </TableCell>
+                      <TableCell>{index + 1}</TableCell>
+                      <TableCell sx={{ fontWeight: 600 }}>{driver.name}</TableCell>
+                      <TableCell>{driver.phone}</TableCell>
+                      <TableCell>{driver.license_number}</TableCell>
+                      <TableCell>{formatAadhaar(driver.aadhaar_no)}</TableCell>
+                      <TableCell>{formatDate(driver.joining_date)}</TableCell>
+                      <TableCell>{formatDate(driver.license_expiry_date)}</TableCell>
+                      <TableCell>
+                        <Chip
+                          icon={status.color === "error" ? <Warning /> : undefined}
+                          label={status.label}
+                          color={status.color === "default" ? "default" : status.color}
+                          size="small"
+                          variant={status.color === "default" ? "outlined" : "filled"}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <ActionButtons
+                          onEdit={() => handleEdit(driver)}
+                          onDelete={() => handleDeleteClick(driver.id, driver.name)}
+                          disabled={saving || deleting}
+                          editTooltip="Edit Driver"
+                          deleteTooltip="Delete Driver"
+                        />
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+        )}
+      </Paper>
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDeleteDialog
+        open={deleteConfirmOpen}
+        title="Delete Driver"
+        message="Are you sure you want to delete this driver?"
+        itemName={deleteTarget?.name}
+        onConfirm={handleDeleteConfirm}
+        onCancel={handleDeleteCancel}
+        loading={deleting}
+      />
+
+      {/* Toast Alerts */}
+      <Snackbar
+        open={toastOpen}
+        autoHideDuration={4000}
+        onClose={() => setToastOpen(false)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert
+          onClose={() => setToastOpen(false)}
+          severity={toastSeverity}
+          sx={{ width: "100%" }}
+        >
+          {toastMessage}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 };

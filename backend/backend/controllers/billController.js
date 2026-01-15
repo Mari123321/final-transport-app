@@ -1,339 +1,441 @@
 import db from "../models/index.js";
-import PDFDocument from "pdfkit";
-import path from "path";
-import { fileURLToPath } from "url";
-import { Op, fn, col, where as seqWhere } from "sequelize";
+import { Op, fn, col } from "sequelize";
 
-const { Invoice, Client, Vehicle, Trip, Bill } = db;
+const { Bill, Invoice, Client, Vehicle, Trip } = db;
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Get available invoice dates for a specific client from the Trips table
-export const getAvailableDates = async (req, res) => {
-  try {
-    const clientId = req.query.clientId || req.params.clientId;
-
-    if (!clientId) {
-      return res.status(400).json({ message: "Client ID is required" });
-    }
-
-    // Query distinct dispatch dates from the Trip table for the given client
-    const dates = await Trip.findAll({
-      where: { client_id: clientId },
-      attributes: [[fn("DATE", col("dispatch_date")), "date"]],
-      group: [fn("DATE", col("dispatch_date"))],
-      order: [[fn("DATE", col("dispatch_date")), "DESC"]],
-      raw: true,
-    });
-
-    const uniqueDates = Array.from(
-      new Map(
-        dates
-          .map((item) => item.date)
-          .filter(Boolean)
-          .map((date) => {
-            const normalized = new Date(date);
-            if (Number.isNaN(normalized.getTime())) return null;
-            const iso = normalized.toISOString().slice(0, 10);
-            return [iso, iso];
-          })
-          .filter(Boolean)
-      ).values()
-    );
-
-    const formattedDates = uniqueDates.map((iso) => ({
-      iso,
-      display: new Date(iso).toLocaleDateString("en-IN", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      }),
-    }));
-
-    res.status(200).json({
-      dates: formattedDates,
-      message: formattedDates.length
-        ? `Found ${formattedDates.length} unique dates for client ${clientId}`
-        : "No trip dates found for this client",
-    });
-  } catch (error) {
-    console.error("Error fetching available dates:", error);
-    res.status(500).json({ message: "Failed to fetch available dates", error: error.message });
-  }
-};
-
-// Get all bills with optional filtering by client and date range
+/**
+ * Get all bills with filtering and pagination
+ * GET /api/bills?clientId=1&status=UNPAID&page=1&limit=10&startDate=2024-01-01&endDate=2024-12-31
+ */
 export const getAllBills = async (req, res) => {
   try {
-    const { clientId, startDate, endDate } = req.query;
-    const where = {};
+    const {
+      clientId,
+      status,
+      page = 1,
+      limit = 10,
+      startDate,
+      endDate,
+      sortBy = "bill_date",
+      sortOrder = "DESC"
+    } = req.query;
 
+    const where = { deleted_at: null };
+    
     if (clientId) where.client_id = clientId;
+    if (status) where.payment_status = status;
     if (startDate && endDate) {
-      where.invoice_date = { [Op.between]: [startDate, endDate] };
+      where.bill_date = { [Op.between]: [startDate, endDate] };
     } else if (startDate) {
-      where.invoice_date = { [Op.gte]: startDate };
+      where.bill_date = { [Op.gte]: startDate };
     } else if (endDate) {
-      where.invoice_date = { [Op.lte]: endDate };
+      where.bill_date = { [Op.lte]: endDate };
     }
 
-    const bills = await Invoice.findAll({
+    const offset = (page - 1) * limit;
+
+    const { count, rows } = await Bill.findAndCountAll({
       where,
       include: [
-        { model: Client, as: "client", attributes: ["client_id", "client_name"] },
+        {
+          model: Invoice,
+          as: "invoice",
+          attributes: ["invoice_id", "invoice_number", "date", "total_amount", "client_id"],
+          required: false,
+          include: [
+            { model: Client, as: "client", attributes: ["client_id", "client_name"] },
+          ],
+        },
+        {
+          model: Client,
+          as: "client",
+          attributes: ["client_id", "client_name", "client_phone"],
+          required: false
+        },
+        {
+          model: Vehicle,
+          as: "vehicle",
+          attributes: ["vehicle_id", "vehicle_number"],
+          required: false
+        }
       ],
-      attributes: [
-        ["invoice_id", "bill_id"],
-        "invoice_no",
-        ["invoice_date", "date"],
-        "dispatch_date",
-        "total_amount",
-        "payment_status",
-        "min_charge_qty",
-        "qty",
-        "rate",
-        "particulars",
-        "client_id"
-      ],
-      order: [["invoice_date", "DESC"]],
+      order: [[sortBy, sortOrder]],
+      offset,
+      limit: parseInt(limit)
     });
-    res.status(200).json(bills);
+
+    // Fetch trips for all invoices to derive vehicles
+    const invoiceIds = rows.map(b => b.invoice_id).filter(Boolean);
+    const trips = invoiceIds.length
+      ? await Trip.findAll({
+          where: { invoice_id: { [Op.in]: invoiceIds } },
+          include: [{ model: Vehicle, as: "vehicle", attributes: ["vehicle_id", "vehicle_number"] }],
+          attributes: ["invoice_id", "vehicle_id", "trip_id"],
+        })
+      : [];
+
+    const tripMap = trips.reduce((acc, trip) => {
+      const key = trip.invoice_id;
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(trip);
+      return acc;
+    }, {});
+
+    const billData = rows.map((bill) => {
+      const tripsForInvoice = tripMap[bill.invoice_id] || [];
+      const vehicleNumbers = Array.from(
+        new Set(tripsForInvoice.map((t) => t.vehicle?.vehicle_number).filter(Boolean))
+      );
+      return {
+        ...bill.toJSON(),
+        client: bill.client || bill.invoice?.client || null,
+        vehicle_numbers: vehicleNumbers,
+      };
+    });
+
+    res.status(200).json({
+      bills: billData,
+      pagination: {
+        total: count,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(count / limit)
+      }
+    });
   } catch (error) {
     console.error("Error fetching bills:", error);
-    res.status(500).json({ message: "Failed to fetch bills" });
+    res.status(500).json({ message: "Failed to fetch bills", error: error.message });
   }
 };
 
-// Create new bill
-export const createBill = async (req, res) => {
+/**
+ * Get single bill by ID
+ * GET /api/bills/:id
+ */
+export const getBillById = async (req, res) => {
   try {
-    const {
-      invoice_no,
-      invoice_date,
-      dispatch_date,
-      client_id,
-      vehicle_number,
-      particulars,
-      qty,
-      min_charge_qty,
-      rate,
-      payment_status
-    } = req.body;
+    const { id } = req.params;
 
-    // Calculate total amount based on max(qty, min_charge_qty) * rate
-    const effectiveQty = Math.max(Number(qty) || 0, Number(min_charge_qty) || 0);
-    const total_amount = effectiveQty * (Number(rate) || 0);
-
-    const newBill = await Invoice.create({
-      invoice_no,
-      invoice_date,
-      dispatch_date,
-      client_id,
-      vehicle_number,
-      particulars,
-      qty: Number(qty) || 0,
-      min_charge_qty: Number(min_charge_qty) || 0,
-      rate: Number(rate) || 0,
-      total_amount,
-      payment_status: payment_status || "Pending",
-      amount_paid: 0,
-      pending_amount: total_amount
+    const bill = await Bill.findByPk(id, {
+      include: [
+        {
+          model: Invoice,
+          as: "invoice",
+          attributes: ["invoice_id", "invoice_number", "date", "total_amount"]
+        },
+        {
+          model: Client,
+          as: "client",
+          attributes: ["client_id", "client_name", "client_phone", "client_email"]
+        },
+        {
+          model: Vehicle,
+          as: "vehicle",
+          attributes: ["vehicle_id", "vehicle_number", "vehicle_type"]
+        }
+      ]
     });
 
-    res.status(201).json({ message: "Bill created successfully", bill: newBill });
+    if (!bill) {
+      return res.status(404).json({ message: "Bill not found" });
+    }
+
+    res.status(200).json(bill);
+  } catch (error) {
+    console.error("Error fetching bill:", error);
+    res.status(500).json({ message: "Failed to fetch bill", error: error.message });
+  }
+};
+
+/**
+ * Generate next bill number in format: PREFIX-XXX
+ */
+async function generateBillNumber(prefix = "BL") {
+  try {
+    const latestBill = await Bill.findOne({
+      where: {
+        bill_number: {
+          [Op.like]: `${prefix}-%`
+        }
+      },
+      order: [["bill_number", "DESC"]],
+      attributes: ["bill_number"]
+    });
+
+    let nextNumber = 1;
+    
+    if (latestBill && latestBill.bill_number) {
+      const match = latestBill.bill_number.match(/-(\d+)$/);
+      if (match) {
+        nextNumber = parseInt(match[1], 10) + 1;
+      }
+    }
+
+    const paddedNumber = String(nextNumber).padStart(3, "0");
+    return `${prefix}-${paddedNumber}`;
+  } catch (error) {
+    console.error("Error generating bill number:", error);
+    const timestamp = Date.now().toString().slice(-6);
+    return `${prefix}-${timestamp}`;
+  }
+}
+
+/**
+ * Create bill from invoice
+ * POST /api/bills
+ * Body: { invoice_id, bill_date, notes }
+ */
+export const createBillFromInvoice = async (req, res) => {
+  try {
+    const { invoice_id, bill_date, notes } = req.body;
+
+    if (!invoice_id) {
+      return res.status(400).json({ message: "invoice_id is required" });
+    }
+
+    // Fetch invoice with relationships (client) and trips for vehicle derivation
+    const invoice = await Invoice.findByPk(invoice_id, {
+      include: [
+        { model: Client, as: "client", attributes: ["client_id", "client_name"] },
+      ]
+    });
+
+    if (!invoice) {
+      return res.status(404).json({ message: "Invoice not found" });
+    }
+
+    // Fetch trips linked to this invoice (source of truth for vehicles)
+    const trips = await Trip.findAll({
+      where: { invoice_id },
+      include: [
+        { model: Vehicle, as: "vehicle", attributes: ["vehicle_id", "vehicle_number"] },
+      ],
+      attributes: ["trip_id", "vehicle_id"],
+    });
+
+    // Check if bill already exists for this invoice
+    const existingBill = await Bill.findOne({
+      where: { invoice_id, deleted_at: null }
+    });
+
+    if (existingBill) {
+      return res.status(400).json({ 
+        message: "Bill already exists for this invoice",
+        bill_id: existingBill.bill_id,
+        bill_number: existingBill.bill_number
+      });
+    }
+
+    // Generate unique bill number
+    const billNumber = await generateBillNumber("BL");
+
+    const vehicleIdForBill = trips.find((t) => t.vehicle_id)?.vehicle_id || null;
+
+    // Create bill
+    const bill = await Bill.create({
+      bill_number: billNumber,
+      invoice_id,
+      client_id: invoice.client_id,
+      vehicle_id: vehicleIdForBill,
+      bill_date: bill_date || invoice.date || new Date(),
+      total_amount: invoice.total_amount || 0,
+      paid_amount: invoice.amount_paid || 0,
+      pending_amount: (invoice.total_amount || 0) - (invoice.amount_paid || 0),
+      payment_status: (invoice.amount_paid || 0) === 0 ? "UNPAID" : 
+                      (invoice.amount_paid || 0) >= (invoice.total_amount || 0) ? "PAID" : "PARTIAL",
+      notes: notes || `Bill created from Invoice ${invoice.invoice_number || invoice_id}`,
+      created_by: req.user?.id || "system"
+    });
+
+    // Reload with relationships
+    const newBill = await Bill.findByPk(bill.bill_id, {
+      include: [
+        { model: Invoice, as: "invoice", attributes: ["invoice_number", "date"] },
+        { model: Client, as: "client", attributes: ["client_name"] },
+        { model: Vehicle, as: "vehicle", attributes: ["vehicle_number"] }
+      ]
+    });
+
+    res.status(201).json({
+      message: "Bill created successfully",
+      bill: newBill
+    });
   } catch (error) {
     console.error("Error creating bill:", error);
     res.status(500).json({ message: "Failed to create bill", error: error.message });
   }
 };
 
-// Update bill
+/**
+ * Update bill amounts and notes
+ * PUT /api/bills/:id
+ * Body: { total_amount, paid_amount, notes }
+ */
 export const updateBill = async (req, res) => {
   try {
     const { id } = req.params;
-    const bill = await Invoice.findByPk(id);
-    if (!bill) return res.status(404).json({ message: "Bill not found" });
+    const { total_amount, paid_amount, notes } = req.body;
 
-    const updates = { ...req.body };
-    
-    // Recalculate total if qty, min_charge_qty, or rate changes
-    if (req.body.qty !== undefined || req.body.min_charge_qty !== undefined || req.body.rate !== undefined) {
-      const qty = req.body.qty !== undefined ? Number(req.body.qty) : bill.qty;
-      const minQty = req.body.min_charge_qty !== undefined ? Number(req.body.min_charge_qty) : bill.min_charge_qty;
-      const rate = req.body.rate !== undefined ? Number(req.body.rate) : bill.rate;
-      
-      const effectiveQty = Math.max(qty || 0, minQty || 0);
-      updates.total_amount = effectiveQty * (rate || 0);
-      updates.pending_amount = updates.total_amount - (bill.amount_paid || 0);
+    const bill = await Bill.findByPk(id);
+    if (!bill) {
+      return res.status(404).json({ message: "Bill not found" });
     }
 
+    // Update bill
+    const updates = {};
+    if (total_amount !== undefined) updates.total_amount = total_amount;
+    if (paid_amount !== undefined) {
+      updates.paid_amount = paid_amount;
+      // Calculate pending amount
+      const total = total_amount !== undefined ? total_amount : bill.total_amount;
+      updates.pending_amount = Math.max(0, total - paid_amount);
+    }
+    if (notes !== undefined) updates.notes = notes;
+
+    updates.updated_by = req.user?.id || "system";
+
     await bill.update(updates);
-    res.json({ message: "Bill updated successfully", bill });
+
+    const updatedBill = await Bill.findByPk(id, {
+      include: [
+        { model: Invoice, as: "invoice", attributes: ["invoice_number"] },
+        { model: Client, as: "client", attributes: ["client_name"] },
+        { model: Vehicle, as: "vehicle", attributes: ["vehicle_number"] }
+      ]
+    });
+
+    res.status(200).json({
+      message: "Bill updated successfully",
+      bill: updatedBill
+    });
   } catch (error) {
     console.error("Error updating bill:", error);
-    res.status(500).json({ message: "Failed to update bill" });
+    res.status(500).json({ message: "Failed to update bill", error: error.message });
   }
 };
 
-export const updatePaymentStatus = async (req, res) => {
+/**
+ * Update bill payment status
+ * PATCH /api/bills/:id/status
+ * Body: { payment_status } - UNPAID, PARTIAL, PAID
+ */
+export const updateBillStatus = async (req, res) => {
   try {
-    const id = req.params.id;
+    const { id } = req.params;
     const { payment_status } = req.body;
-    const invoice = await Invoice.findByPk(id);
-    if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
-    await invoice.update({ payment_status });
-    res.json({ message: "Payment status updated", payment_status });
+    if (!["UNPAID", "PARTIAL", "PAID"].includes(payment_status)) {
+      return res.status(400).json({ 
+        message: "Invalid payment status. Must be UNPAID, PARTIAL, or PAID" 
+      });
+    }
+
+    const bill = await Bill.findByPk(id);
+    if (!bill) {
+      return res.status(404).json({ message: "Bill not found" });
+    }
+
+    await bill.update({
+      payment_status,
+      updated_by: req.user?.id || "system"
+    });
+
+    const updatedBill = await Bill.findByPk(id, {
+      include: [
+        { model: Invoice, as: "invoice", attributes: ["invoice_number"] },
+        { model: Client, as: "client", attributes: ["client_name"] },
+        { model: Vehicle, as: "vehicle", attributes: ["vehicle_number"] }
+      ]
+    });
+
+    res.status(200).json({
+      message: "Payment status updated successfully",
+      bill: updatedBill
+    });
   } catch (error) {
     console.error("Error updating payment status:", error);
-    res.status(500).json({ message: "Failed to update payment status" });
+    res.status(500).json({ message: "Failed to update payment status", error: error.message });
   }
 };
 
-export const updateMinChargeQty = async (req, res) => {
-  try {
-    const id = req.params.id;
-    const { min_charge_qty } = req.body;
-
-    const invoice = await Invoice.findByPk(id);
-    if (!invoice) return res.status(404).json({ message: "Invoice not found" });
-
-    // Recalculate total amount with new min_charge_qty
-    const effectiveQty = Math.max(invoice.qty || 0, Number(min_charge_qty) || 0);
-    const total_amount = effectiveQty * (invoice.rate || 0);
-    const pending_amount = total_amount - (invoice.amount_paid || 0);
-
-    await invoice.update({ 
-      min_charge_qty: Number(min_charge_qty),
-      total_amount,
-      pending_amount
-    });
-    
-    res.json({ 
-      message: "Min charge quantity updated", 
-      min_charge_qty: Number(min_charge_qty),
-      total_amount,
-      pending_amount
-    });
-  } catch (error) {
-    console.error("Error updating min_charge_qty:", error);
-    res.status(500).json({ message: "Failed to update min charge quantity" });
-  }
-};
-
-// Delete bill
+/**
+ * Delete bill (soft delete)
+ * DELETE /api/bills/:id
+ */
 export const deleteBill = async (req, res) => {
   try {
     const { id } = req.params;
-    const bill = await Invoice.findByPk(id);
-    if (!bill) return res.status(404).json({ message: "Bill not found" });
 
-    await bill.destroy();
-    res.json({ message: "Bill deleted successfully" });
+    const bill = await Bill.findByPk(id);
+    if (!bill) {
+      return res.status(404).json({ message: "Bill not found" });
+    }
+
+    // Soft delete
+    await bill.update({
+      deleted_at: new Date(),
+      updated_by: req.user?.id || "system"
+    });
+
+    res.status(200).json({ message: "Bill deleted successfully" });
   } catch (error) {
     console.error("Error deleting bill:", error);
-    res.status(500).json({ message: "Failed to delete bill" });
+    res.status(500).json({ message: "Failed to delete bill", error: error.message });
   }
 };
 
-export const downloadBillPDF = async (req, res) => {
+/**
+ * Get bills summary (dashboard KPIs)
+ * GET /api/bills/summary
+ * Returns: totalBills, totalAmount, paidAmount, pendingAmount, by payment_status
+ */
+export const getBillsSummary = async (req, res) => {
   try {
-    const bill = await Invoice.findByPk(req.params.id, {
-      include: [
-        { model: Client, as: "client", attributes: ["client_name"] },
-        
-      ],
+    const { startDate, endDate, clientId } = req.query;
+
+    const where = { deleted_at: null };
+    if (clientId) where.client_id = clientId;
+    if (startDate && endDate) {
+      where.bill_date = { [Op.between]: [startDate, endDate] };
+    }
+
+    const [
+      totalBills,
+      unpaidBills,
+      partialBills,
+      paidBills,
+      summary
+    ] = await Promise.all([
+      Bill.count({ where }),
+      Bill.count({ where: { ...where, payment_status: "UNPAID" } }),
+      Bill.count({ where: { ...where, payment_status: "PARTIAL" } }),
+      Bill.count({ where: { ...where, payment_status: "PAID" } }),
+      Bill.findOne({
+        where,
+        attributes: [
+          [fn("SUM", col("total_amount")), "totalAmount"],
+          [fn("SUM", col("paid_amount")), "paidAmount"],
+          [fn("SUM", col("pending_amount")), "pendingAmount"]
+        ],
+        raw: true
+      })
+    ]);
+
+    res.status(200).json({
+      kpis: {
+        totalBills: totalBills || 0,
+        totalAmount: parseFloat(summary?.totalAmount) || 0,
+        paidAmount: parseFloat(summary?.paidAmount) || 0,
+        pendingAmount: parseFloat(summary?.pendingAmount) || 0,
+        byStatus: {
+          unpaid: unpaidBills || 0,
+          partial: partialBills || 0,
+          paid: paidBills || 0
+        }
+      }
     });
-
-    if (!bill) return res.status(404).json({ message: "Bill not found" });
-
-    const doc = new PDFDocument({ margin: 40, size: "A4" });
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename=bill-${bill.invoice_no || bill.id}.pdf`);
-    doc.pipe(res);
-
-    doc.fontSize(16).font("Helvetica-Bold").text("R.K.S.BRO'S", { align: "center" });
-    doc.fontSize(10).font("Helvetica").text(
-      "Fleet Owners & Transport Contractors\nOld No 99 New No 47, G.A Road, 2nd Lane, Old Washermenpet, Ch-21\nPh: 044-25945913/25985558, Mob: 9841128061, 9841128064",
-      { align: "center" }
-    );
-    doc.moveDown(1);
-
-    doc.fontSize(11).font("Helvetica-Bold").text("BILL", { align: "center" });
-    doc.moveDown(0.5);
-
-    const yStart = doc.y;
-    doc.fontSize(10).font("Helvetica-Bold").text("Invoice No:", 40, yStart);
-    doc.font("Helvetica").text(bill.invoice_no || "-", 110, yStart);
-    doc.font("Helvetica-Bold").text("Invoice Date:", 350, yStart);
-    doc.font("Helvetica").text(bill.invoice_date || "-", 430, yStart);
-
-    doc.font("Helvetica-Bold").text("To:", 40, yStart + 18);
-    doc.font("Helvetica").text(bill.client?.client_name || "-", 110, yStart + 18);
-
-    doc.moveDown(3);
-
-    const tableTop = doc.y;
-    const rowHeight = 20;
-    const colWidths = [60, 80, 90, 60, 60, 60, 60];
-    const headers = [
-      "Date of Dispatch", "Vehicle No", "Particulars", "Actual Qty", "Min Qty", "Rate", "Amount"
-    ];
-
-    let x = 40;
-    doc.font("Helvetica-Bold").fontSize(9);
-    headers.forEach((header, i) => {
-      doc.rect(x, tableTop, colWidths[i], rowHeight).stroke();
-      doc.text(header, x + 2, tableTop + 6, { width: colWidths[i] - 4, align: "center" });
-      x += colWidths[i];
-    });
-
-    let y = tableTop + rowHeight;
-    x = 40;
-    doc.font("Helvetica").fontSize(9);
-    const row = [
-      bill.dispatch_date || "-",
-      bill.vehicle?.vehicle_number || "-",
-      bill.particulars || "-",
-      bill.qty || "-",
-      bill.min_charge_qty || "-",
-      bill.rate || "-",
-      bill.total_amount ? `₹${bill.total_amount}` : "-"
-    ];
-    row.forEach((text, i) => {
-      doc.rect(x, y, colWidths[i], rowHeight).stroke();
-      doc.text(text?.toString() || "-", x + 2, y + 6, { width: colWidths[i] - 4, align: "center" });
-      x += colWidths[i];
-    });
-
-    y += rowHeight + 10;
-    doc.font("Helvetica-Bold").fontSize(10).text("TOTAL", 400, y);
-    doc.font("Helvetica-Bold").fontSize(10).text(
-      bill.total_amount ? `₹${bill.total_amount}` : "-",
-      500, y, { align: "right" }
-    );
-
-    y += 40;
-    doc.fontSize(9).font("Helvetica-Bold").text("Terms & Conditions", 40, y);
-    doc.font("Helvetica").fontSize(8).text(
-      "1. Subject to Chennai Jurisdiction.\n" +
-      "2. Interest @ 24% per annum will be charged if not paid within due date from the date bill.\n" +
-      "3. Payment should be made by a/c payee Cheque / draft payable at Chennai.",
-      40, y + 12
-    );
-
-    doc.fontSize(9).font("Helvetica-Oblique").text(
-      "This is a Computer Generated Invoice",
-      40, 780, { align: "left" }
-    );
-    doc.fontSize(9).font("Helvetica-Bold").text(
-      "For R.K.S. BRO'S\nAuthorized Signatory",
-      400, 760, { align: "left" }
-    );
-
-    doc.end();
-  } catch (err) {
-    res.status(500).json({ message: "Error generating Bill PDF", error: err.message });
+  } catch (error) {
+    console.error("Error fetching bills summary:", error);
+    res.status(500).json({ message: "Failed to fetch bills summary", error: error.message });
   }
 };

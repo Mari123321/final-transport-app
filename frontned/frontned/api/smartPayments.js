@@ -129,6 +129,15 @@ export const createPaymentFromInvoice = async (paymentData) => {
   return response.data;
 };
 
+/**
+ * Apply invoice draft coming from Invoice page
+ * @param {Object} draftData - Draft invoice payload
+ */
+export const applyInvoiceDraft = async (draftData) => {
+  const response = await api.post(`${BASE_URL}/from-invoice`, draftData);
+  return response.data;
+};
+
 export default {
   getClientsForPayment,
   getBillDatesForClient,
@@ -138,4 +147,5 @@ export default {
   addPartialPayment,
   getPaymentTransactions,
   createPaymentFromInvoice,
+  applyInvoiceDraft,
 };

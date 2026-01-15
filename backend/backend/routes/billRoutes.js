@@ -1,44 +1,40 @@
 import express from 'express';
-import { 
-  getAllBills, 
-  createBill, 
-  updateBill, 
+import {
+  getAllBills,
+  getBillById,
+  createBillFromInvoice,
+  updateBill,
+  updateBillStatus,
   deleteBill,
-  updatePaymentStatus, 
-  updateMinChargeQty,
-  downloadBillPDF,
-  getAvailableDates 
+  getBillsSummary
 } from '../controllers/billController.js';
-import { generateInvoicePDF } from '../controllers/pdfController.js';
 
 const router = express.Router();
 
-// Get available dates for a client from bills (accepts ?clientId= or /:clientId for backward compatibility)
-router.get('/available-dates', getAvailableDates);
-router.get('/available-dates/:clientId', getAvailableDates);
+/**
+ * Bill Routes
+ * All endpoints work with the proper Bill model with relationships to Invoice, Client, Vehicle
+ */
 
-// Get all bills (with optional filtering by clientId, startDate, endDate)
+// GET /api/bills/summary - Dashboard KPIs
+router.get('/summary', getBillsSummary);
+
+// GET /api/bills - Get all bills with filtering and pagination
 router.get('/', getAllBills);
 
-// Create new bill
-router.post('/', createBill);
+// GET /api/bills/:id - Get single bill by ID
+router.get('/:id', getBillById);
 
-// Update bill (general update including qty, rate, min_charge_qty)
+// POST /api/bills - Create bill from invoice
+router.post('/', createBillFromInvoice);
+
+// PUT /api/bills/:id - Update bill amounts and notes
 router.put('/:id', updateBill);
 
-// Update payment status
-router.put('/:id/status', updatePaymentStatus);
+// PATCH /api/bills/:id/status - Update payment status (UNPAID, PARTIAL, PAID)
+router.patch('/:id/status', updateBillStatus);
 
-// Update minimum charge quantity (with auto-calculation)
-router.put('/:id/min-charge', updateMinChargeQty);
-
-// Delete bill
+// DELETE /api/bills/:id - Soft delete bill
 router.delete('/:id', deleteBill);
-
-// Generate PDF
-router.get('/:id/pdf', generateInvoicePDF);
-
-// Download PDF
-router.get('/:id/download', downloadBillPDF);
 
 export default router;

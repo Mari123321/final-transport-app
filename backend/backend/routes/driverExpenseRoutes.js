@@ -5,10 +5,14 @@ import {
   getDriverExpenseById,
   getExpensesByDriver,
   updateDriverExpense,
-  deleteDriverExpense
+  deleteDriverExpense,
+  getExpenseDatesByDriver
 } from '../controllers/driverExpenseController.js';
 
 const router = express.Router();
+
+// Get expense dates by driver (must be before /:id route)
+router.get('/dates', getExpenseDatesByDriver);
 
 // Create new driver expense
 router.post('/', createDriverExpense);

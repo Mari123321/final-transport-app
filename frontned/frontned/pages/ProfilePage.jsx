@@ -1,54 +1,165 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
+import { Box, Container, Card, CardContent, Typography, Avatar, Grid, CircularProgress, Alert } from "@mui/material";
+import axios from "axios";
 
 const ProfilePage = () => {
-  const user = {
-    name: "Lokesh K.",
-    email: "lokesh@example.com",
-    role: "Admin",
-    joined: "April 2024",
-    avatar: "https://ui-avatars.com/api/?name=Lokesh+K&background=random",
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const fetchUserProfile = async () => {
+      try {
+        // Try to get token from localStorage
+        const token = localStorage.getItem("token");
+        
+        // For demo, if no token, use demo data
+        if (!token) {
+          setUser({
+            username: "Admin User",
+            email: "admin@transport.com",
+            role: "admin",
+            createdAt: "2024-04-01T00:00:00.000Z",
+          });
+          setLoading(false);
+          return;
+        }
+
+        const response = await axios.get("http://localhost:5000/api/auth/me", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (response.data.success) {
+          setUser(response.data.user);
+        }
+      } catch (err) {
+        console.error("Profile fetch error:", err);
+        // Fallback to demo data if API fails
+        setUser({
+          username: "Admin User",
+          email: "admin@transport.com",
+          role: "admin",
+          createdAt: "2024-04-01T00:00:00.000Z",
+        });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchUserProfile();
+  }, []);
+
+  if (loading) {
+    return (
+      <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "80vh" }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  const formatDate = (dateString) => {
+    if (!dateString) return "N/A";
+    return new Date(dateString).toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+  };
+
+  const getInitials = (name) => {
+    if (!name) return "U";
+    return name
+      .split(" ")
+      .map((n) => n[0])
+      .join("")
+      .toUpperCase()
+      .slice(0, 2);
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 p-6">
-      <div className="max-w-3xl mx-auto bg-white rounded-2xl shadow-lg p-8">
-        <div className="flex items-center space-x-6">
-          <img
-            className="w-24 h-24 rounded-full object-cover border-4 border-indigo-500 shadow-sm"
-            src={user.avatar}
-            alt="User avatar"
-          />
-          <div>
-            <h2 className="text-2xl font-semibold text-gray-800">{user.name}</h2>
-            <p className="text-gray-500">{user.email}</p>
-            <p className="mt-1 text-sm text-gray-400">Role: {user.role}</p>
-            <p className="text-sm text-gray-400">Joined: {user.joined}</p>
-          </div>
-        </div>
+    <Box sx={{ backgroundColor: "#f5f7fa", minHeight: "100vh", py: 4 }}>
+      <Container maxWidth="md">
+        <Card sx={{ boxShadow: 3 }}>
+          <CardContent sx={{ p: 4 }}>
+            {/* Header with Avatar */}
+            <Box sx={{ display: "flex", alignItems: "center", mb: 4, gap: 3 }}>
+              <Avatar
+                sx={{
+                  width: 100,
+                  height: 100,
+                  bgcolor: "#1976d2",
+                  fontSize: "2rem",
+                  fontWeight: "bold",
+                }}
+              >
+                {getInitials(user?.username)}
+              </Avatar>
+              <Box>
+                <Typography variant="h4" sx={{ fontWeight: 700, mb: 0.5 }}>
+                  {user?.username || "User"}
+                </Typography>
+                <Typography color="textSecondary" sx={{ mb: 0.5 }}>
+                  {user?.email || "No email"}
+                </Typography>
+                <Typography
+                  sx={{
+                    display: "inline-block",
+                    px: 2,
+                    py: 0.5,
+                    borderRadius: 2,
+                    bgcolor: "#e3f2fd",
+                    color: "#1976d2",
+                    fontWeight: 600,
+                    fontSize: "0.875rem",
+                  }}
+                >
+                  {user?.role?.toUpperCase() || "USER"}
+                </Typography>
+              </Box>
+            </Box>
 
-        <div className="mt-8">
-          <h3 className="text-lg font-medium text-gray-700 mb-3">Account Info</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="text-sm text-gray-500">Full Name</label>
-              <div className="text-gray-800">{user.name}</div>
-            </div>
-            <div>
-              <label className="text-sm text-gray-500">Email Address</label>
-              <div className="text-gray-800">{user.email}</div>
-            </div>
-            <div>
-              <label className="text-sm text-gray-500">User Role</label>
-              <div className="text-gray-800">{user.role}</div>
-            </div>
-            <div>
-              <label className="text-sm text-gray-500">Joined On</label>
-              <div className="text-gray-800">{user.joined}</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+            {/* Account Information */}
+            <Typography variant="h6" sx={{ fontWeight: 600, mb: 2 }}>
+              Account Information
+            </Typography>
+            <Grid container spacing={3}>
+              <Grid item xs={12} sm={6}>
+                <Typography variant="body2" color="textSecondary">
+                  Username
+                </Typography>
+                <Typography variant="body1" sx={{ fontWeight: 500 }}>
+                  {user?.username || "N/A"}
+                </Typography>
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <Typography variant="body2" color="textSecondary">
+                  Email Address
+                </Typography>
+                <Typography variant="body1" sx={{ fontWeight: 500 }}>
+                  {user?.email || "N/A"}
+                </Typography>
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <Typography variant="body2" color="textSecondary">
+                  Role
+                </Typography>
+                <Typography variant="body1" sx={{ fontWeight: 500 }}>
+                  {user?.role?.charAt(0).toUpperCase() + user?.role?.slice(1) || "N/A"}
+                </Typography>
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <Typography variant="body2" color="textSecondary">
+                  Member Since
+                </Typography>
+                <Typography variant="body1" sx={{ fontWeight: 500 }}>
+                  {formatDate(user?.createdAt)}
+                </Typography>
+              </Grid>
+            </Grid>
+          </CardContent>
+        </Card>
+      </Container>
+    </Box>
   );
 };
 
