@@ -1,0 +1,9 @@
+{
+  "name": "transport-app",
+  "version": "1.0.0",
+  "description": "Transport app root",
+  "scripts": {
+    "start": "cd backend/backend && npm start",
+    "dev": "cd backend/backend && npm start"
+  }
+}
